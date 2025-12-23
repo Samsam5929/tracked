@@ -1,0 +1,18 @@
+# Игнорируем настройки с паролями
+settings.json
+
+# Игнорируем логи
+logs/
+*.log
+
+# Игнорируем данные пользователей
+data/
+user_data/
+
+# Игнорируем системные файлы Python
+__pycache__/
+*.py[cod]
+venv/
+.env
+.vscode/
+.idea/
