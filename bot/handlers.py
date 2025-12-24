@@ -125,8 +125,23 @@ async def get_versions_callback(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = update.effective_user.id
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text('⏳ Идет проверка, пожалуйста, подождите...')
+        
+        # 1. Удаляем старое меню (кнопку), чтобы не мешалось
+        try:
+            await update.callback_query.message.delete()
+        except Exception:
+            pass
+        
+        # 2. Отправляем НОВОЕ сообщение "Идет проверка"
+        msg = await context.bot.send_message(chat_id=user_id, text='⏳ Идет проверка, пожалуйста, подождите...')
+        
+        # 3. Сразу сохраняем ID этого нового сообщения в базу
+        # Теперь бот точно знает, какое сообщение нужно превратить в "Результаты"
+        bot_state = load_bot_state(user_id)
+        bot_state['main_menu_message_id'] = msg.message_id
+        save_bot_state(user_id, bot_state)
     
+    # Дальше всё как обычно
     session, error = await asyncio.to_thread(service_1c.login_to_1c)
     if error:
         await send_or_edit_message(context, user_id, f"Ошибка: {escape_markdown(error)}", get_main_keyboard(user_id))
@@ -142,6 +157,7 @@ async def get_versions_callback(update: Update, context: ContextTypes.DEFAULT_TY
     save_configs(user_id, updated_configs)
     
     full_text = header + result_text
+    # Эта функция превратит сообщение "⏳ Идет проверка" в результаты
     await send_or_edit_message(context, user_id, full_text, get_main_keyboard(user_id, updated_configs))
     return ConversationHandler.END
 

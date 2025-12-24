@@ -33,7 +33,12 @@ def main():
     try:
         tz = ZoneInfo(TIMEZONE) 
         target_time = datetime.time(hour=SCHEDULE_HOUR, minute=SCHEDULE_MINUTE, tzinfo=tz)
-        job_queue.run_daily(handlers.daily_version_check, target_time)
+        # Разрешаем опоздание до 60 секунд
+        job_queue.run_daily(
+            handlers.daily_version_check, 
+            target_time, 
+            job_kwargs={'misfire_grace_time': 60} 
+)
         
         now = datetime.datetime.now(tz)
         next_run = now.replace(hour=SCHEDULE_HOUR, minute=SCHEDULE_MINUTE, second=0, microsecond=0)
