@@ -5,7 +5,12 @@ def escape_markdown(text: str) -> str:
     return re.sub(f'([{re.escape(escape_chars)}])', '\\\\\\1', str(text))
 
 def normalize_text(text):
-    return re.sub('\\s+', ' ', text).strip().lower()
+    """Для поиска конфигураций на сайте (приводит к нижнему регистру)."""
+    return re.sub(r'\s+', ' ', text).strip().lower()
+
+def clean_whitespace(text):
+    """Удаляет переносы строк и лишние пробелы, сохраняя регистр."""
+    return re.sub(r'\s+', ' ', text).strip()
 
 def parse_registration_text(text):
     tenants_data = []
@@ -23,10 +28,15 @@ def parse_registration_text(text):
         nom_matches = re.finditer(r'Номенклатура:\s*(?P<nom>.*?)\s+Регистрационный номер:\s*(?P<reg>\d+)', chunk, re.DOTALL)
         
         for match in nom_matches:
+            # Извлекаем "грязный" текст
+            raw_nom = match.group('nom')
+            # Чистим его от переносов строк и двойных пробелов
+            cleaned_nom = clean_whitespace(raw_nom)
+            
             tenants_data.append({
                 'name': name,
                 'inn': inn,
-                'nom_raw': match.group('nom').strip(),
+                'nom_raw': cleaned_nom, # Сохраняем уже чистую версию
                 'reg_num': match.group('reg').strip()
             })
     return tenants_data
