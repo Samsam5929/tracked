@@ -35,13 +35,20 @@ def setup_logging():
     )
     rotating_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 
+    handlers = [rotating_handler]
+    
+    # Добавляем вывод в консоль только если она доступна
+    if sys.stdout:
+        handlers.append(logging.StreamHandler(sys.stdout))
+
     logging.basicConfig(
         level=logging.INFO,
-        handlers=[rotating_handler, logging.StreamHandler(sys.stdout)]
+        handlers=handlers
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     
     try:
+        # Перенаправление stderr в файл для отлова критических ошибок, если консоли нет
         sys.stderr = open(os.path.join(LOG_DIR, 'critical_errors.log'), 'a', encoding='utf-8')
     except Exception:
         pass

@@ -1,9 +1,10 @@
 import asyncio
 import html
 import logging
-import hashlib # Добавил импорт для работы словаря замен
+import hashlib
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
+from telegram.error import BadRequest  # <--- ДОБАВЛЕН ИМПОРТ
 from .config import *
 from .storage import *
 from .utils import *
@@ -87,7 +88,7 @@ async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     full_text = header + result_text
     await send_or_edit_message(context, user_id, full_text, get_main_keyboard(user_id, configs))
 
-# --- ЕЖЕДНЕВНАЯ ПРОВЕРКА (ЭТОЙ ФУНКЦИИ НЕ БЫЛО) ---
+# --- ЕЖЕДНЕВНАЯ ПРОВЕРКА ---
 async def daily_version_check(context: ContextTypes.DEFAULT_TYPE):
     logger.info('ЗАПУСК ежедневной проверки...')
     if not USER_DATA_DIR.exists():
@@ -126,22 +127,17 @@ async def get_versions_callback(update: Update, context: ContextTypes.DEFAULT_TY
     if update.callback_query:
         await update.callback_query.answer()
         
-        # 1. Удаляем старое меню (кнопку), чтобы не мешалось
         try:
             await update.callback_query.message.delete()
         except Exception:
             pass
         
-        # 2. Отправляем НОВОЕ сообщение "Идет проверка"
         msg = await context.bot.send_message(chat_id=user_id, text='⏳ Идет проверка, пожалуйста, подождите...')
         
-        # 3. Сразу сохраняем ID этого нового сообщения в базу
-        # Теперь бот точно знает, какое сообщение нужно превратить в "Результаты"
         bot_state = load_bot_state(user_id)
         bot_state['main_menu_message_id'] = msg.message_id
         save_bot_state(user_id, bot_state)
     
-    # Дальше всё как обычно
     session, error = await asyncio.to_thread(service_1c.login_to_1c)
     if error:
         await send_or_edit_message(context, user_id, f"Ошибка: {escape_markdown(error)}", get_main_keyboard(user_id))
@@ -157,7 +153,6 @@ async def get_versions_callback(update: Update, context: ContextTypes.DEFAULT_TY
     save_configs(user_id, updated_configs)
     
     full_text = header + result_text
-    # Эта функция превратит сообщение "⏳ Идет проверка" в результаты
     await send_or_edit_message(context, user_id, full_text, get_main_keyboard(user_id, updated_configs))
     return ConversationHandler.END
 
@@ -638,10 +633,13 @@ async def manage_mappings_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     
     mappings = load_mappings(user_id)
     if not mappings:
-        await query.edit_message_text(
-            text='Словарь замен пуст.',
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('⬅️ Назад', callback_data='manage_list_menu')]])
-        )
+        try:
+            await query.edit_message_text(
+                text='Словарь замен пуст.',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('⬅️ Назад', callback_data='manage_list_menu')]])
+            )
+        except BadRequest:
+            pass # Игнорируем ошибку, если сообщение не изменилось
         return
 
     keyboard = []
@@ -652,10 +650,13 @@ async def manage_mappings_menu(update: Update, context: ContextTypes.DEFAULT_TYP
         
     keyboard.append([InlineKeyboardButton('⬅️ Назад', callback_data='manage_list_menu')])
     
-    await query.edit_message_text(
-        text='Нажмите на замену, чтобы удалить её из словаря:',
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    try:
+        await query.edit_message_text(
+            text='Нажмите на замену, чтобы удалить её из словаря:',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except BadRequest:
+        pass # Игнорируем ошибку, если сообщение не изменилось
 
 async def delete_mapping_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
