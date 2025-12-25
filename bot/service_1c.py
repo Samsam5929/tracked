@@ -2,11 +2,12 @@ import requests
 import re
 from bs4 import BeautifulSoup
 from .config import LOGIN_1C, PASSWORD_1C
-from .utils import normalize_text, escape_markdown
+from .utils import normalize_text, escape_markdown, version_tuple
 import logging
 
 logger = logging.getLogger(__name__)
 
+# ... (функции login_to_1c и get_releases_soup без изменений) ...
 def login_to_1c():
     session = requests.Session()
     session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
@@ -58,7 +59,6 @@ def parse_versions_from_soup(soup, configs_data: list):
         found_row = site_configs.get(norm_name)
         
         if not found_row:
-            # Нечеткий поиск
             for k, v in site_configs.items():
                 if norm_name in k and len(k) - len(norm_name) < 5:
                     found_row = v; break
@@ -71,48 +71,108 @@ def parse_versions_from_soup(soup, configs_data: list):
         ver_cell = found_row.find('td', class_='versionColumn')
         date_cell = ver_cell.find_next_sibling('td')
         
-        # Логика извлечения версии
         all_a = ver_cell.find_all('a')
         all_dates = list(date_cell.stripped_strings)
         
-        curr_ver, rel_date = "", ""
-        if not all_a:
-            curr_ver = ver_cell.get_text(strip=True)
-            rel_date = date_cell.get_text(strip=True)
-        else:
-            # Поиск ДП
-            idx = 0
-            for j, a in enumerate(all_a):
-                nxt = a.find_next_sibling()
-                if nxt and nxt.name == 'sup' and nxt.find('abbr', title=re.compile('Длительная')):
-                    idx = j; break
-            curr_ver = all_a[idx].get_text(strip=True)
-            rel_date = all_dates[idx] if idx < len(all_dates) else all_dates[0]
+        found_versions = [] 
 
-        updated_configs[i]['last_date'] = rel_date
-        last_ver = config.get('last_version', '')
-        
-        # --- ВОТ ЗДЕСЬ БЫЛА ОШИБКА, ТЕПЕРЬ ИСПРАВЛЕНО ---
-        status = ''
-        if not last_ver:
-            updated_configs[i]['last_version'] = curr_ver
-            status = '🔹 \\(Первая проверка\\)'
-        elif curr_ver != last_ver:
-            updated_configs[i]['last_version'] = curr_ver
-            updated_configs[i]['is_new'] = True
-            status = '💥 *НОВАЯ ВЕРСИЯ\\!*'
+        if not all_a:
+            v_text = ver_cell.get_text(strip=True)
+            d_text = date_cell.get_text(strip=True)
+            found_versions.append({'ver': v_text, 'date': d_text, 'is_dp': False})
         else:
-            # Если версия не изменилась
-            if config.get('is_new', False):
-                status = '💥 *НОВАЯ ВЕРСИЯ\\!* \\(ждет\\)'
-            else:
-                status = '✅ \\(Без изменений\\)'
-        # ------------------------------------------------
+            for idx, a_tag in enumerate(all_a):
+                v_text = a_tag.get_text(strip=True)
+                d_text = all_dates[idx] if idx < len(all_dates) else "н/д"
+                
+                is_dp = False
+                nxt = a_tag.find_next_sibling()
+                if nxt and nxt.name == 'sup' and nxt.find('abbr', title=re.compile('Длительная')):
+                    is_dp = True
+                
+                found_versions.append({'ver': v_text, 'date': d_text, 'is_dp': is_dp})
+
+        latest_obj = found_versions[0] if found_versions else None
+        dp_obj = next((v for v in found_versions if v['is_dp']), None)
+
+        track_type = config.get('track_type', 'latest')
+        last_ver_saved = config.get('last_version', '')
+        
+        save_ver = ""
+        save_date = ""
+        display_lines = []
+        has_changes = False
+
+        if track_type == 'both':
+            old_parts = last_ver_saved.split('|') if '|' in last_ver_saved else [last_ver_saved, '']
+            old_new = old_parts[0]
+            old_dp = old_parts[1] if len(old_parts) > 1 else ''
+
+            # --- NEW ---
+            curr_new_ver = latest_obj['ver'] if latest_obj else "Нет"
+            curr_new_date = latest_obj['date'] if latest_obj else "-"
             
-        results_text.append(f'*{safe_name}*\n   └ Версия: `{escape_markdown(curr_ver)}`, Дата: `{escape_markdown(rel_date)}`\n   └ Статус: {status}')
+            mark_new = "✅"
+            if not old_new: mark_new = "🆕"
+            elif curr_new_ver != old_new:
+                mark_new = "⚡️"
+                has_changes = True
+            
+            display_lines.append(f"🔥 `{escape_markdown(curr_new_ver)}` • `{escape_markdown(curr_new_date)}` {mark_new}")
+
+            # --- DP ---
+            curr_dp_ver = dp_obj['ver'] if dp_obj else "Нет"
+            curr_dp_date = dp_obj['date'] if dp_obj else "-"
+            
+            mark_dp = "✅"
+            if not old_dp: mark_dp = "🆕"
+            elif curr_dp_ver != old_dp:
+                mark_dp = "⚡️"
+                has_changes = True
+            
+            display_lines.append(f"🛡 `{escape_markdown(curr_dp_ver)}` • `{escape_markdown(curr_dp_date)}` {mark_dp}")
+
+            save_ver = f"{curr_new_ver}|{curr_dp_ver}"
+            save_date = f"{curr_new_date}|{curr_dp_date}"
+
+        else:
+            # --- SINGLE MODE ---
+            target_obj = None
+            icon = "🔥"
+            
+            if track_type == 'dp':
+                target_obj = dp_obj if dp_obj else latest_obj
+                icon = "🛡"
+            else:
+                target_obj = latest_obj
+                icon = "🔥"
+
+            curr_ver = target_obj['ver'] if target_obj else "Нет данных"
+            curr_date = target_obj['date'] if target_obj else "-"
+            
+            mark = "✅"
+            if not last_ver_saved: mark = "🆕"
+            elif curr_ver != last_ver_saved:
+                mark = "⚡️"
+                has_changes = True
+            
+            display_lines.append(f"{icon} `{escape_markdown(curr_ver)}` • `{escape_markdown(curr_date)}` {mark}")
+            
+            save_ver = curr_ver
+            save_date = curr_date
+
+        updated_configs[i]['last_version'] = save_ver
+        updated_configs[i]['last_date'] = save_date
+        
+        if has_changes:
+            updated_configs[i]['is_new'] = True
+        
+        block_text = f'*{safe_name}*\n' + '\n'.join(display_lines)
+        results_text.append(block_text)
 
     return ('\n\n'.join(results_text), updated_configs)
 
+# ... (остальные функции без изменений) ...
 def get_target_versions(session: requests.Session, config_name: str) -> tuple:
     try:
         RELEASES_URL = 'https://releases.1c.ru/total'
@@ -170,12 +230,8 @@ def get_target_versions(session: requests.Session, config_name: str) -> tuple:
             else:
                 non_dp_versions.append(v_text)
                 
-        def version_key(v):
-            try: return [int(p) for p in v.split('.')]
-            except ValueError: return [0]
-
-        latest_dp = max(dp_versions, key=version_key) if dp_versions else None
-        latest_non_dp = max(non_dp_versions, key=version_key) if non_dp_versions else None
+        latest_dp = max(dp_versions, key=version_tuple) if dp_versions else None
+        latest_non_dp = max(non_dp_versions, key=version_tuple) if non_dp_versions else None
         
         if not latest_dp and not latest_non_dp:
             return (None, 'Не удалось определить ни одной актуальной версии.')
@@ -225,12 +281,7 @@ def find_update_path(session: requests.Session, config_name: str, start_version:
         actual_target = dp_target
         message_prefix = ''
 
-        def is_version_greater(v1, v2):
-            try:
-                return [int(p) for p in v1.split('.')] > [int(p) for p in v2.split('.')]
-            except: return v1 > v2
-
-        if is_version_greater(current_version, dp_target):
+        if version_tuple(current_version) > version_tuple(dp_target):
             actual_target = non_dp_target
             message_prefix = f'Ваша версия `{escape_markdown(current_version)}` новее версии на ДП `{escape_markdown(dp_target)}`\\. Расчет выполняется до версии не на длительной поддержке\\.\n\n'
 
@@ -238,12 +289,21 @@ def find_update_path(session: requests.Session, config_name: str, start_version:
             return message_prefix + f'Ваша версия `{escape_markdown(start_version)}` уже является целевой (`{escape_markdown(actual_target)}`).'
 
         predecessors = {}
+        transitions = {} 
+
         for row in rows:
             cols = row.find_all('td')
             if len(cols) < 3: continue
             to_version = cols[0].get_text(strip=True)
             from_versions = [v.strip() for v in cols[2].get_text(strip=True).split(',')]
+            is_dp = bool(row.find('small', string='ДП'))
+
             predecessors[to_version] = from_versions
+            
+            for fv in from_versions:
+                if fv not in transitions:
+                    transitions[fv] = []
+                transitions[fv].append({'version': to_version, 'is_dp': is_dp})
 
         reachable_versions = {actual_target}
         queue = [actual_target]
@@ -259,29 +319,15 @@ def find_update_path(session: requests.Session, config_name: str, start_version:
         max_steps = 100
         
         while current_version != actual_target and count < max_steps:
-            possible_next_steps = []
-            for row in rows:
-                cols = row.find_all('td')
-                if len(cols) < 3: continue
-                to_ver = cols[0].get_text(strip=True)
-                from_vers = [v.strip() for v in cols[2].get_text(strip=True).split(',')]
-                
-                if current_version in from_vers:
-                    if to_ver in reachable_versions:
-                        is_next_dp = bool(row.find('small', string='ДП'))
-                        possible_next_steps.append({'version': to_ver, 'is_dp': is_next_dp})
+            possible_next_steps = transitions.get(current_version, [])
+            valid_steps = [step for step in possible_next_steps if step['version'] in reachable_versions]
 
-            if not possible_next_steps:
+            if not valid_steps:
                 if count > 0:
                     return message_prefix + f'Пройдено *{count}* обновлений до версии `{escape_markdown(current_version)}`\\. Дальнейший шаг обновления не найден\\.'
                 return message_prefix + f'Не удалось найти ни одного шага обновления с версии `{escape_markdown(start_version)}`\\.'
 
-            chosen_step = None
-            for step in possible_next_steps:
-                if not step['is_dp']:
-                    chosen_step = step
-                    break
-            if not chosen_step: chosen_step = possible_next_steps[0]
+            chosen_step = max(valid_steps, key=lambda x: version_tuple(x['version']))
 
             current_version = chosen_step['version']
             count += 1

@@ -9,22 +9,20 @@ from logging.handlers import TimedRotatingFileHandler
 def get_base_path():
     if getattr(sys, 'frozen', False):
         return os.path.dirname(sys.executable)
-    # Теперь мы внутри папки bot, поэтому берем родителя родителя (parent.parent)
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 BASE_PATH = get_base_path()
 SETTINGS_FILE = os.path.join(BASE_PATH, 'settings.json')
 
-# Логи кладем в папку logs
 LOG_DIR = os.path.join(BASE_PATH, 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
 
-# Данные кладем в data/user_data
 USER_DATA_DIR = Path(BASE_PATH) / 'data' / 'user_data'
 
 # --- КОНСТАНТЫ СОСТОЯНИЙ ---
-GET_CONFIG_NAME, SELECT_CONFIG, GET_MANUAL_CONFIG, GET_CURRENT_VERSION = range(4)
-GET_REG_TEXT = 4
+# Добавлено GET_CONFIG_TYPE
+GET_CONFIG_NAME, GET_CONFIG_TYPE, SELECT_CONFIG, GET_MANUAL_CONFIG, GET_CURRENT_VERSION = range(5)
+GET_REG_TEXT = 5
 
 # --- ЛОГИРОВАНИЕ ---
 def setup_logging():
@@ -37,7 +35,6 @@ def setup_logging():
 
     handlers = [rotating_handler]
     
-    # Добавляем вывод в консоль только если она доступна
     if sys.stdout:
         handlers.append(logging.StreamHandler(sys.stdout))
 
@@ -48,7 +45,6 @@ def setup_logging():
     logging.getLogger("httpx").setLevel(logging.WARNING)
     
     try:
-        # Перенаправление stderr в файл для отлова критических ошибок, если консоли нет
         sys.stderr = open(os.path.join(LOG_DIR, 'critical_errors.log'), 'a', encoding='utf-8')
     except Exception:
         pass
