@@ -693,29 +693,78 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 3. Обновите функцию check_updates_calculate
 async def check_updates_calculate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_version = update.message.text.strip()
-    
-    # --- ВАЛИДАЦИЯ ---
-    if not is_valid_version(user_version):
-        await update.message.reply_text(
-            '❌ Некорректный формат версии.\n'
-            'Пожалуйста, пришлите версию в формате чисел через точку.\n'
-            'Пример: `3.0.123.45`',
-            parse_mode='MarkdownV2'
-        )
-        return GET_CURRENT_VERSION
-    # -----------------
-
     config_name = context.user_data.get('selected_config')
+    chat_id = update.effective_chat.id
     
+    # 1. Валидация (если добавили ранее)
+    # if not is_valid_version(user_version): ...
+
     if not config_name:
         await update.message.reply_text('Произошла ошибка: конфигурация не была выбрана. Попробуйте снова.')
         return ConversationHandler.END
     
-    try: await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=update.message.id)
-    except: pass
+    # 2. Удаляем сообщение пользователя
+    try: 
+        await context.bot.delete_message(chat_id=chat_id, message_id=update.message.id)
+    except: 
+        pass
         
+    # --- ИСПРАВЛЕНИЕ: Сразу даем обратную связь ---
+    # Сообщаем, что процесс пошел, ДО начала сетевых запросов
+    await send_or_edit_message(
+        context, 
+        chat_id, 
+        text='⏳ *Подключаюсь к порталу 1С\\.\\.\\.*', 
+        reply_markup=None
+    )
+    await context.bot.send_chat_action(chat_id=chat_id, action='typing')
+    # ----------------------------------------------
+
+    # 3. Авторизация (может занять время)
     session, error = await asyncio.to_thread(service_1c.login_to_1c)
     if error:
-        await send_or_edit_message(context, update.effective_chat.id, text=error, reply_markup=get_main_keyboard(update.effective_user.id))
+        await send_or_edit_message(context, chat_id, text=f"❌ {escape_markdown(error)}", reply_markup=get_main_keyboard(update.effective_user.id))
         context.user_data.clear()
         return ConversationHandler.END
+    
+    # --- Обновляем статус ---
+    await send_or_edit_message(
+        context, 
+        chat_id, 
+        text=f'⏳ *Ищу актуальные версии для {escape_markdown(config_name)}\\.\\.\\.*', 
+        reply_markup=None
+    )
+    # ------------------------
+    
+    # 4. Получение целевых версий
+    targets, error = await asyncio.to_thread(service_1c.get_target_versions, session, config_name)
+    if error:
+        await send_or_edit_message(context, chat_id, text=f"❌ {error}", reply_markup=get_main_keyboard(update.effective_user.id))
+        context.user_data.clear()
+        return ConversationHandler.END
+    
+    dp_target = targets['dp']
+    non_dp_target = targets['non_dp']
+    
+    status_text = f'✅ Версия на ДП: `{escape_markdown(dp_target)}`'
+    if dp_target != non_dp_target:
+        status_text += f'\n✅ Версия не на ДП: `{escape_markdown(non_dp_target)}`'
+        
+    # --- Финальный статус перед долгим расчетом ---
+    await send_or_edit_message(
+        context, 
+        chat_id, 
+        text=f'{status_text}\n\n⏳ *Рассчитываю цепочку обновлений от* `{escape_markdown(user_version)}`*\\.\\.\\.*', 
+        reply_markup=None
+    )
+    # ----------------------------------------------
+    
+    # 5. Расчет пути (самая долгая операция)
+    result_text = await asyncio.to_thread(service_1c.find_update_path, session, config_name, user_version, dp_target, non_dp_target)
+    
+    header = escape_markdown('📊 *Результат подсчета обновлений:*\n\n')
+    full_text = header + result_text
+    
+    await send_or_edit_message(context, chat_id, text=full_text, reply_markup=get_main_keyboard(update.effective_user.id))
+    context.user_data.clear()
+    return ConversationHandler.END
