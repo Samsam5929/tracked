@@ -53,3 +53,25 @@ def is_valid_version(version_str: str) -> bool:
     # Разрешаем от 2 до 5 групп цифр через точку
     pattern = r'^\d+(\.\d+){1,4}$'
     return bool(re.match(pattern, version_str.strip()))
+    
+def parse_config_and_version(text: str):
+    """
+    Пытается извлечь название конфигурации и версию из строки.
+    Пример: "Бухгалтерия 3.0 (3.0.189.29)" -> ("Бухгалтерия 3.0", "3.0.189.29")
+    """
+    # Ищем паттерн версии: 3 или 4 группы цифр через точку (напр. 3.0.123 или 3.0.123.45)
+    version_pattern = r'\b\d+\.\d+\.\d+(\.\d+)?\b'
+    match = re.search(version_pattern, text)
+    
+    if match:
+        version = match.group(0)
+        # Удаляем версию из текста
+        text_without_version = text.replace(version, '')
+        # Удаляем скобки () [] и лишние пробелы
+        clean_name = re.sub(r'[()\[\]]', '', text_without_version)
+        clean_name = re.sub(r'\s+', ' ', clean_name).strip()
+        # Удаляем запятые на концах, если есть
+        clean_name = clean_name.strip(', ')
+        return clean_name, version
+    
+    return text.strip(), None

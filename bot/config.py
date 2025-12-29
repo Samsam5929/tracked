@@ -48,6 +48,7 @@ def setup_logging():
         sys.stderr = open(os.path.join(LOG_DIR, 'critical_errors.log'), 'a', encoding='utf-8')
     except Exception:
         pass
+        
 
 # --- ЗАГРУЗКА НАСТРОЕК ---
 def load_settings():
@@ -77,3 +78,16 @@ ADMIN_USER_ID = int(settings.get('ADMIN_USER_ID', 0))
 TIMEZONE = settings.get('TIMEZONE', 'Asia/Novosibirsk')
 SCHEDULE_HOUR = settings.get('SCHEDULE_HOUR', 9)
 SCHEDULE_MINUTE = settings.get('SCHEDULE_MINUTE', 0)
+
+# --- НАСТРОЙКИ ИНТЕРФЕЙСА (ИКОНКИ) ---
+# Статусы
+ICON_NEW_VERSION = "❌"  # Была ⚡️. Теперь красный крестик в квадрате (как вы просили)
+ICON_OK = "✅"           # Версия актуальна
+
+# Типы конфигураций
+ICON_LATEST_TYPE = "🔥"  # Обычная версия (можно заменить на 🔹 или 📦)
+ICON_LTS_TYPE = "🛡"     # Длительная поддержка (можно заменить на 🔸 или 🏛)
+
+# Разделитель между версией и датой
+# Используем стрелку, она хорошо заметна и не похожа на цифры
+SEPARATOR_SYMBOL = "от"

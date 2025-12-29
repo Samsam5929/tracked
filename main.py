@@ -116,7 +116,8 @@ def main():
         states={
             SELECT_CONFIG: [
                 CallbackQueryHandler(handlers.check_updates_select_config, pattern='^select_config_'),
-                CallbackQueryHandler(handlers.check_updates_manual_config_prompt, pattern='^manual_config$')
+                CallbackQueryHandler(handlers.check_updates_manual_config_prompt, pattern='^manual_config$'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.check_updates_free_text_input) 
             ],
             GET_MANUAL_CONFIG: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.check_updates_handle_manual_config)],
             GET_CURRENT_VERSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.check_updates_calculate)]
