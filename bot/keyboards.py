@@ -28,6 +28,8 @@ def get_type_selection_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton('🔥 Только самую новую', callback_data='type_latest')],
         [InlineKeyboardButton('🛡 Только ДП (LTS)', callback_data='type_dp')],
-        [InlineKeyboardButton('👀 И то, и другое', callback_data='type_both')],
+        [InlineKeyboardButton('👀 И то, и другое (New + ДП)', callback_data='type_both')],
+        [InlineKeyboardButton('🎯 Конкретная ветка', callback_data='type_specific')],
+        [InlineKeyboardButton('🎯 Ветка + 🛡 ДП', callback_data='type_specific_dp')],
         [InlineKeyboardButton('⬅️ Отмена', callback_data='main_menu')]
     ])

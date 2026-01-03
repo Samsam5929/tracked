@@ -48,34 +48,50 @@ def format_version_list_from_storage(user_id: int):
         last_version = config_obj.get('last_version')
         last_date = config_obj.get('last_date')
         track_type = config_obj.get('track_type', 'latest')
+        branch_filter = config_obj.get('branch_filter', '')
         is_new = config_obj.get('is_new', False)
         
-        # Общий статус для конфига в меню (так как хранилище простое)
-        status_mark = "⚡️" if is_new else "✅"
+        status_mark = ICON_NEW_VERSION if is_new else ICON_OK
         
         display_lines = []
         
-        # --- НОВЫЙ ФОРМАТ ---
         def format_line(icon, ver, date, mark):
             return f"{mark} {icon} `{escape_markdown(ver)}` {SEPARATOR_SYMBOL} `{escape_markdown(date)}`"
         
         if not last_version or not last_date:
             display_lines.append('   └ Данных пока нет ⏳')
         else:
-            if '|' in last_version:
+            # Проверяем, есть ли разделитель |, указывающий на двойную версию
+            if (track_type == 'both' or track_type == 'specific_dp') and last_version and '|' in last_version:
                 ver_parts = last_version.split('|')
-                date_parts = last_date.split('|') if '|' in last_date else [last_date, '-']
+                date_parts = last_date.split('|') if last_date and '|' in last_date else [last_date, '-']
                 
-                v_new = ver_parts[0]
-                d_new = date_parts[0]
+                v_primary = ver_parts[0]
+                d_primary = date_parts[0]
                 v_dp = ver_parts[1] if len(ver_parts) > 1 else "Нет"
                 d_dp = date_parts[1] if len(date_parts) > 1 else "-"
                 
-                display_lines.append(format_line("🔥", v_new, d_new, status_mark))
-                display_lines.append(format_line("🛡", v_dp, d_dp, status_mark))
+                icon_primary = ICON_SPECIFIC_TYPE if track_type == 'specific_dp' else ICON_LATEST_TYPE
+                
+                line1 = format_line(icon_primary, v_primary, d_primary, status_mark)
+                if track_type == 'specific_dp' and branch_filter:
+                    line1 += f" \\(фильтр: `{escape_markdown(branch_filter)}`\\)"
+                
+                display_lines.append(line1)
+                display_lines.append(format_line(ICON_LTS_TYPE, v_dp, d_dp, status_mark))
+            
             else:
-                icon = "🛡" if track_type == 'dp' else "🔥"
-                display_lines.append(format_line(icon, last_version, last_date, status_mark))
+                # Одинарный режим
+                icon = ICON_LATEST_TYPE
+                if track_type == 'dp': icon = ICON_LTS_TYPE
+                elif track_type == 'specific' or track_type == 'specific_dp': icon = ICON_SPECIFIC_TYPE
+                
+                line = format_line(icon, last_version, last_date, status_mark)
+                
+                if (track_type == 'specific' or track_type == 'specific_dp') and branch_filter:
+                    line += f" \\(фильтр: `{escape_markdown(branch_filter)}`\\)"
+                
+                display_lines.append(line)
 
         block_text = f'*{safe_config_name}*\n' + '\n'.join(display_lines)
         results_text.append(block_text)
@@ -129,7 +145,8 @@ async def daily_version_check(context: ContextTypes.DEFAULT_TYPE):
             user_configs = load_configs(user_id)
             if not user_configs: continue
             
-            result_text, updated_configs = service_1c.parse_versions_from_soup(soup, user_configs)
+            # Передаем session, так как для веток может потребоваться доп. запрос
+            result_text, updated_configs = await asyncio.to_thread(service_1c.parse_versions_from_soup, soup, user_configs, session)
             save_configs(user_id, updated_configs)
             
             full_text = escape_markdown('🗓️ *Ежедневная проверка:*\n\n') + result_text
@@ -163,7 +180,8 @@ async def get_versions_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return ConversationHandler.END
 
     header = escape_markdown('🔍 *Результаты проверки:*\n\n')
-    result_text, updated_configs = service_1c.parse_versions_from_soup(soup, load_configs(user_id))
+    # Передаем session
+    result_text, updated_configs = await asyncio.to_thread(service_1c.parse_versions_from_soup, soup, load_configs(user_id), session)
     save_configs(user_id, updated_configs)
     
     full_text = header + result_text
@@ -200,7 +218,7 @@ async def handle_new_config_name(update: Update, context: ContextTypes.DEFAULT_T
     config_name = update.message.text
     context.user_data['new_config_name'] = config_name
 
-    try: await context.bot.delete_message(chat_id=user_id, message_id=update.message.message_id)
+    try: await context.bot.delete_message(chat_id=user_id, message_id=update.message.id)
     except: pass
     
     if 'prompt_message_id' in context.user_data:
@@ -221,18 +239,44 @@ async def handle_new_config_type(update: Update, context: ContextTypes.DEFAULT_T
     user_id = update.effective_user.id
     await query.answer()
     
-    # --- ИСПРАВЛЕНИЕ: Удаляем сообщение с кнопками выбора типа ---
-    try:
-        await query.message.delete()
-    except Exception:
-        pass
-    # -------------------------------------------------------------
+    # ИСПРАВЛЕНО: Используем replace, чтобы не ломать specific_dp
+    track_type = query.data.replace('type_', '')
     
-    track_type = query.data.split('_')[1]
+    # Если выбран тип "Конкретная ветка" или "Ветка + ДП", спрашиваем номер
+    if track_type in ['specific', 'specific_dp']:
+        context.user_data['pending_track_type'] = track_type
+        # Используем raw-строку r""
+        await query.edit_message_text(
+            text=r"Введите начало версии, которую нужно отслеживать \(например, `3\.0\.12`\):",
+            parse_mode='MarkdownV2'
+        )
+        return GET_SPECIFIC_BRANCH
+
+    try: await query.message.delete()
+    except: pass
+    
+    return await _save_new_config(update, context, track_type, "")
+
+async def handle_specific_branch_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    branch_filter = update.message.text.strip()
+    
+    track_type = context.user_data.get('pending_track_type', 'specific')
+    
+    try: await context.bot.delete_message(chat_id=user_id, message_id=update.message.id)
+    except: pass
+    
+    if 'prompt_message_id' in context.user_data:
+        try: await context.bot.delete_message(chat_id=user_id, message_id=context.user_data['prompt_message_id'])
+        except: pass
+        
+    return await _save_new_config(update, context, track_type, branch_filter)
+
+async def _save_new_config(update, context, track_type, branch_filter):
+    user_id = update.effective_user.id
     config_name = context.user_data.get('new_config_name')
     
     if not config_name:
-        # Если имя потерялось, отправляем новое сообщение, так как старое мы только что удалили
         await context.bot.send_message(chat_id=user_id, text="Ошибка: имя конфигурации потеряно. Попробуйте снова.")
         return ConversationHandler.END
 
@@ -240,6 +284,7 @@ async def handle_new_config_type(update: Update, context: ContextTypes.DEFAULT_T
     configs.append({
         'name': config_name,
         'track_type': track_type,
+        'branch_filter': branch_filter,
         'last_version': '',
         'last_date': '',
         'is_new': False
@@ -248,31 +293,18 @@ async def handle_new_config_type(update: Update, context: ContextTypes.DEFAULT_T
     
     context.user_data.pop('new_config_name', None)
     context.user_data.pop('prompt_message_id', None)
+    context.user_data.pop('pending_track_type', None)
 
-    type_desc = {'latest': 'Самая новая', 'dp': 'Только ДП', 'both': 'ДП + Новая'}.get(track_type, track_type)
+    type_desc = {
+        'latest': 'Самая новая', 
+        'dp': 'Только ДП', 
+        'both': 'ДП + Новая',
+        'specific': f'Ветка {branch_filter}',
+        'specific_dp': f'Ветка {branch_filter} + ДП'
+    }.get(track_type, track_type)
     
-    # Экранируем текст, чтобы не было ошибки с плюсом (+)
     success_text = f'✅ Конфигурация *{escape_markdown(config_name)}* добавлена\\!\nТип: {escape_markdown(type_desc)}'
-    
-    bot_state = load_bot_state(user_id)
-    main_menu_id = bot_state.get('main_menu_message_id')
-    
-    # Обновляем главное меню
-    if main_menu_id:
-        try:
-            await context.bot.edit_message_text(
-                chat_id=user_id, 
-                message_id=main_menu_id, 
-                text=success_text, 
-                parse_mode='MarkdownV2', 
-                reply_markup=get_main_keyboard(user_id, configs)
-            )
-        except Exception:
-            # Если не получилось отредактировать (например, старое меню слишком далеко), шлем новое
-            await send_or_edit_message(context, user_id, success_text, get_main_keyboard(user_id, configs))
-    else:
-        await send_or_edit_message(context, user_id, success_text, get_main_keyboard(user_id, configs))
-
+    await send_or_edit_message(context, user_id, success_text, get_main_keyboard(user_id, configs))
     return ConversationHandler.END
 
 async def remove_config_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -310,7 +342,13 @@ async def change_type_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = []
     for i, c in enumerate(configs):
-        icon = {'latest': '🔥', 'dp': '🛡', 'both': '👀'}.get(c.get('track_type'), '🔥')
+        t = c.get('track_type')
+        icon = '🔥'
+        if t == 'dp': icon = '🛡'
+        elif t == 'both': icon = '👀'
+        elif t == 'specific': icon = '🎯'
+        elif t == 'specific_dp': icon = '🎯🛡'
+        
         btn_text = f"{icon} {c['name']}"
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=f'chtype_sel_{i}')])
     
@@ -330,11 +368,20 @@ async def change_type_save_callback(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     user_id = update.effective_user.id
     await query.answer()
-    new_type = query.data.split('_')[1]
+    
+    # ИСПРАВЛЕНО: Используем replace, чтобы не ломать specific_dp
+    new_type = query.data.replace('type_', '')
     index = context.user_data.get('edit_config_index')
     
     if index is None:
         await change_type_menu(update, context)
+        return
+
+    if new_type in ['specific', 'specific_dp']:
+        await query.edit_message_text(
+            text="⚠️ Для смены на этот тип нужно удалить и добавить конфигурацию заново (чтобы задать ветку).",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('⬅️ Назад', callback_data='manage_list_menu')]])
+        )
         return
 
     configs = load_configs(user_id)
@@ -342,6 +389,7 @@ async def change_type_save_callback(update: Update, context: ContextTypes.DEFAUL
         configs[index]['track_type'] = new_type
         configs[index]['last_version'] = '' 
         configs[index]['last_date'] = ''
+        configs[index]['branch_filter'] = ''
         save_configs(user_id, configs)
     
     await change_type_menu(update, context)
@@ -433,19 +481,16 @@ async def check_updates_handle_manual_config(update: Update, context: ContextTyp
     return GET_CURRENT_VERSION
 
 async def _perform_update_check(update: Update, context: ContextTypes.DEFAULT_TYPE, config_name: str, user_version: str):
-    """Общая логика проверки обновлений, используемая разными хендлерами."""
     chat_id = update.effective_chat.id
     
-    # 1. Валидация версии
     if not is_valid_version(user_version):
         await context.bot.send_message(
             chat_id=chat_id,
             text='❌ *Некорректный формат версии*\\.\nПример: `3.0.123.45`',
             parse_mode='MarkdownV2'
         )
-        return ConversationHandler.END # Или можно вернуть состояние, чтобы повторить ввод
+        return ConversationHandler.END
 
-    # 2. Обратная связь
     await send_or_edit_message(
         context, chat_id, 
         text=f'⏳ *Конфигурация:* {escape_markdown(config_name)}\n*Версия:* `{escape_markdown(user_version)}`\n\n🚀 *Подключаюсь к 1С\\.\\.\\.*', 
@@ -453,14 +498,12 @@ async def _perform_update_check(update: Update, context: ContextTypes.DEFAULT_TY
     )
     await context.bot.send_chat_action(chat_id=chat_id, action='typing')
 
-    # 3. Авторизация
     session, error = await asyncio.to_thread(service_1c.login_to_1c)
     if error:
         await send_or_edit_message(context, chat_id, text=f"❌ {escape_markdown(error)}", reply_markup=get_main_keyboard(update.effective_user.id))
         context.user_data.clear()
         return ConversationHandler.END
     
-    # 4. Получение целевых версий
     targets, error = await asyncio.to_thread(service_1c.get_target_versions, session, config_name)
     if error:
         await send_or_edit_message(context, chat_id, text=f"❌ {error}", reply_markup=get_main_keyboard(update.effective_user.id))
@@ -480,7 +523,6 @@ async def _perform_update_check(update: Update, context: ContextTypes.DEFAULT_TY
         reply_markup=None
     )
     
-    # 5. Расчет пути
     result_text = await asyncio.to_thread(service_1c.find_update_path, session, config_name, user_version, dp_target, non_dp_target)
     
     header = escape_markdown('📊 *Результат:* \n\n')
@@ -491,48 +533,89 @@ async def _perform_update_check(update: Update, context: ContextTypes.DEFAULT_TY
     return ConversationHandler.END
 
 async def check_updates_calculate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Вызывается, когда пользователь вводит версию ПОСЛЕ выбора конфигурации кнопкой."""
     user_version = update.message.text.strip()
     config_name = context.user_data.get('selected_config')
+    chat_id = update.effective_chat.id
     
     if not config_name:
-        await update.message.reply_text('Ошибка контекста. Начните заново.')
+        await update.message.reply_text('Произошла ошибка: конфигурация не была выбрана. Попробуйте снова.')
         return ConversationHandler.END
+    
+    try: 
+        await context.bot.delete_message(chat_id=chat_id, message_id=update.message.id)
+    except: 
+        pass
+        
+    await send_or_edit_message(
+        context, 
+        chat_id, 
+        text='⏳ *Подключаюсь к порталу 1С\\.\\.\\.*', 
+        reply_markup=None
+    )
+    await context.bot.send_chat_action(chat_id=chat_id, action='typing')
 
-    try: await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=update.message.id)
-    except: pass
-
-    return await _perform_update_check(update, context, config_name, user_version)
+    session, error = await asyncio.to_thread(service_1c.login_to_1c)
+    if error:
+        await send_or_edit_message(context, chat_id, text=f"❌ {escape_markdown(error)}", reply_markup=get_main_keyboard(update.effective_user.id))
+        context.user_data.clear()
+        return ConversationHandler.END
+    
+    await send_or_edit_message(
+        context, 
+        chat_id, 
+        text=f'⏳ *Ищу актуальные версии для {escape_markdown(config_name)}\\.\\.\\.*', 
+        reply_markup=None
+    )
+    
+    targets, error = await asyncio.to_thread(service_1c.get_target_versions, session, config_name)
+    if error:
+        await send_or_edit_message(context, chat_id, text=f"❌ {error}", reply_markup=get_main_keyboard(update.effective_user.id))
+        context.user_data.clear()
+        return ConversationHandler.END
+    
+    dp_target = targets['dp']
+    non_dp_target = targets['non_dp']
+    
+    status_text = f'✅ Версия на ДП: `{escape_markdown(dp_target)}`'
+    if dp_target != non_dp_target:
+        status_text += f'\n✅ Версия не на ДП: `{escape_markdown(non_dp_target)}`'
+        
+    await send_or_edit_message(
+        context, 
+        chat_id, 
+        text=f'{status_text}\n\n⏳ *Рассчитываю цепочку обновлений от* `{escape_markdown(user_version)}`*\\.\\.\\.*', 
+        reply_markup=None
+    )
+    
+    result_text = await asyncio.to_thread(service_1c.find_update_path, session, config_name, user_version, dp_target, non_dp_target)
+    
+    header = escape_markdown('📊 *Результат подсчета обновлений:*\n\n')
+    full_text = header + result_text
+    
+    await send_or_edit_message(context, chat_id, text=full_text, reply_markup=get_main_keyboard(update.effective_user.id))
+    context.user_data.clear()
+    return ConversationHandler.END
 
 async def check_updates_free_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Вызывается в меню выбора конфигурации, если пользователь
-    вместо нажатия кнопки прислал текст.
-    """
     text = update.message.text
     user_id = update.effective_user.id
     
-    # Парсим текст
     config_name, version = parse_config_and_version(text)
     
     try: await context.bot.delete_message(chat_id=user_id, message_id=update.message.id)
     except: pass
 
-    # Сценарий 1: Пользователь ввел "Бухгалтерия 3.0.189.29" (есть и имя, и версия)
     if config_name and version:
-        # Пытаемся найти полное имя в сохраненных, если пользователь ввел сокращенно
         saved_configs = load_configs(user_id)
         normalized_input = normalize_text(config_name)
         
-        # Ищем совпадение в сохраненных
         for cfg in saved_configs:
             if normalized_input in normalize_text(cfg['name']):
-                config_name = cfg['name'] # Берем полное правильное имя
+                config_name = cfg['name'] 
                 break
         
         return await _perform_update_check(update, context, config_name, version)
 
-    # Сценарий 2: Пользователь ввел только имя "Бухгалтерия" (версии нет)
     elif config_name and not version:
         context.user_data['selected_config'] = config_name
         
@@ -540,7 +623,6 @@ async def check_updates_free_text_input(update: Update, context: ContextTypes.DE
         await send_or_edit_message(context, user_id, msg_text)
         return GET_CURRENT_VERSION
 
-    # Сценарий 3: Пользователь ввел только версию (странно, но бывает)
     elif not config_name and version:
         await context.bot.send_message(chat_id=user_id, text="Вы ввели версию, но я не понял, для какой она конфигурации. Пожалуйста, введите название и версию вместе.")
         return SELECT_CONFIG
@@ -750,10 +832,6 @@ async def delete_stray_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try: await update.message.delete()
     except: pass
     
-# 1. Добавьте импорт новой функции
-from .utils import escape_markdown, normalize_text, version_tuple, is_valid_version
-
-# 2. Добавьте функцию help_command (где-то в начале обработчиков)
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "🤖 *Справка по боту*\n\n"
@@ -769,82 +847,3 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "_Бот проверяет обновления автоматически раз в сутки._"
     )
     await send_or_edit_message(context, update.effective_chat.id, escape_markdown(text), get_main_keyboard(update.effective_user.id))
-
-# 3. Обновите функцию check_updates_calculate
-async def check_updates_calculate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_version = update.message.text.strip()
-    config_name = context.user_data.get('selected_config')
-    chat_id = update.effective_chat.id
-    
-    # 1. Валидация (если добавили ранее)
-    # if not is_valid_version(user_version): ...
-
-    if not config_name:
-        await update.message.reply_text('Произошла ошибка: конфигурация не была выбрана. Попробуйте снова.')
-        return ConversationHandler.END
-    
-    # 2. Удаляем сообщение пользователя
-    try: 
-        await context.bot.delete_message(chat_id=chat_id, message_id=update.message.id)
-    except: 
-        pass
-        
-    # --- ИСПРАВЛЕНИЕ: Сразу даем обратную связь ---
-    # Сообщаем, что процесс пошел, ДО начала сетевых запросов
-    await send_or_edit_message(
-        context, 
-        chat_id, 
-        text='⏳ *Подключаюсь к порталу 1С\\.\\.\\.*', 
-        reply_markup=None
-    )
-    await context.bot.send_chat_action(chat_id=chat_id, action='typing')
-    # ----------------------------------------------
-
-    # 3. Авторизация (может занять время)
-    session, error = await asyncio.to_thread(service_1c.login_to_1c)
-    if error:
-        await send_or_edit_message(context, chat_id, text=f"❌ {escape_markdown(error)}", reply_markup=get_main_keyboard(update.effective_user.id))
-        context.user_data.clear()
-        return ConversationHandler.END
-    
-    # --- Обновляем статус ---
-    await send_or_edit_message(
-        context, 
-        chat_id, 
-        text=f'⏳ *Ищу актуальные версии для {escape_markdown(config_name)}\\.\\.\\.*', 
-        reply_markup=None
-    )
-    # ------------------------
-    
-    # 4. Получение целевых версий
-    targets, error = await asyncio.to_thread(service_1c.get_target_versions, session, config_name)
-    if error:
-        await send_or_edit_message(context, chat_id, text=f"❌ {error}", reply_markup=get_main_keyboard(update.effective_user.id))
-        context.user_data.clear()
-        return ConversationHandler.END
-    
-    dp_target = targets['dp']
-    non_dp_target = targets['non_dp']
-    
-    status_text = f'✅ Версия на ДП: `{escape_markdown(dp_target)}`'
-    if dp_target != non_dp_target:
-        status_text += f'\n✅ Версия не на ДП: `{escape_markdown(non_dp_target)}`'
-        
-    # --- Финальный статус перед долгим расчетом ---
-    await send_or_edit_message(
-        context, 
-        chat_id, 
-        text=f'{status_text}\n\n⏳ *Рассчитываю цепочку обновлений от* `{escape_markdown(user_version)}`*\\.\\.\\.*', 
-        reply_markup=None
-    )
-    # ----------------------------------------------
-    
-    # 5. Расчет пути (самая долгая операция)
-    result_text = await asyncio.to_thread(service_1c.find_update_path, session, config_name, user_version, dp_target, non_dp_target)
-    
-    header = escape_markdown('📊 *Результат подсчета обновлений:*\n\n')
-    full_text = header + result_text
-    
-    await send_or_edit_message(context, chat_id, text=full_text, reply_markup=get_main_keyboard(update.effective_user.id))
-    context.user_data.clear()
-    return ConversationHandler.END

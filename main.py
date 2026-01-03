@@ -14,7 +14,8 @@ from telegram.ext import (
 from bot.config import (
     setup_logging, TELEGRAM_TOKEN, ADMIN_USER_ID, 
     TIMEZONE, SCHEDULE_HOUR, SCHEDULE_MINUTE, USER_DATA_DIR,
-    GET_CONFIG_NAME, GET_CONFIG_TYPE, SELECT_CONFIG, GET_MANUAL_CONFIG, GET_CURRENT_VERSION, GET_REG_TEXT
+    GET_CONFIG_NAME, GET_CONFIG_TYPE, GET_SPECIFIC_BRANCH, SELECT_CONFIG, 
+    GET_MANUAL_CONFIG, GET_CURRENT_VERSION, GET_REG_TEXT
 )
 from bot import handlers
 
@@ -26,10 +27,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     """Логирует ошибки, возникающие при обновлении."""
     logger.error("Exception while handling an update:", exc_info=context.error)
 
-    # Если ошибка - Conflict (две копии бота), мы ничего не можем сделать программно,
-    # кроме как записать это в лог (что уже сделано выше).
-    
-    # Можно отправить сообщение админу, если это не ConflictError
     if update and isinstance(update, Update) and ADMIN_USER_ID:
         tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
         tb_string = "".join(tb_list)
@@ -41,7 +38,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
             f"<pre>{html.escape(tb_string)}</pre>"
         )
         
-        # Обрезаем, если слишком длинное
         if len(message) > 4000:
             message = message[:4000] + "... (truncated)"
 
@@ -63,7 +59,6 @@ def main():
     )
     job_queue = application.job_queue
 
-    # Регистрируем обработчик ошибок
     application.add_error_handler(error_handler)
 
     try:
@@ -79,7 +74,6 @@ def main():
         next_run = now.replace(hour=SCHEDULE_HOUR, minute=SCHEDULE_MINUTE, second=0, microsecond=0)
         if next_run <= now: next_run += datetime.timedelta(days=1)
         
-        # ИСПРАВЛЕНО: Используем logger вместо print
         logger.info(f"⏰ СЕЙЧАС: {now.strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info(f"📅 ЗАПУСК ТАЙМЕРА: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
     except Exception as e:
@@ -106,7 +100,8 @@ def main():
         entry_points=[CallbackQueryHandler(handlers.add_config_start, pattern='^add_config_start$')],
         states={
             GET_CONFIG_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_new_config_name)],
-            GET_CONFIG_TYPE: [CallbackQueryHandler(handlers.handle_new_config_type, pattern='^type_')]
+            GET_CONFIG_TYPE: [CallbackQueryHandler(handlers.handle_new_config_type, pattern='^type_')],
+            GET_SPECIFIC_BRANCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_specific_branch_input)]
         },
         fallbacks=[CallbackQueryHandler(handlers.main_menu_callback, pattern='^main_menu$')]
     )
@@ -140,7 +135,9 @@ def main():
     
     application.add_handler(CallbackQueryHandler(handlers.change_type_menu, pattern='^change_type_menu$'))
     application.add_handler(CallbackQueryHandler(handlers.change_type_select_callback, pattern='^chtype_sel_\\d+$'))
-    application.add_handler(CallbackQueryHandler(handlers.change_type_save_callback, pattern='^type_(latest|dp|both)$'))
+    
+    # ИСПРАВЛЕНО: Добавлены specific и specific_dp в паттерн
+    application.add_handler(CallbackQueryHandler(handlers.change_type_save_callback, pattern='^type_(latest|dp|both|specific|specific_dp)$'))
     
     application.add_handler(CallbackQueryHandler(handlers.reorder_config_menu, pattern='^reorder_config_menu$'))
     application.add_handler(CallbackQueryHandler(handlers.move_config_callback, pattern='^(move_up|move_down)_\\d+$'))

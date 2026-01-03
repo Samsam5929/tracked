@@ -1,6 +1,7 @@
 import requests
 import re
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
+from datetime import datetime
 from .config import *
 from .utils import normalize_text, escape_markdown, version_tuple
 import logging
@@ -17,7 +18,8 @@ def login_to_1c():
         soup = BeautifulSoup(r.content, 'html.parser')
         
         execution = soup.find('input', {'name': 'execution'})
-        if not execution: return None, 'Ошибка: Не найден токен входа.'
+        if not execution: 
+            return None, 'Ошибка: Не найден токен входа (возможно, изменилась страница авторизации).'
             
         payload = {
             'username': LOGIN_1C, 'password': PASSWORD_1C, 
@@ -40,11 +42,16 @@ def get_releases_soup(session):
     except Exception as e:
         return None, f'Ошибка получения релизов: {e}'
 
-def parse_versions_from_soup(soup, configs_data: list):
+def parse_versions_from_soup(soup, configs_data: list, session: requests.Session = None):
     results_text = []
     updated_configs = configs_data.copy()
+    
+    if not soup:
+        return ('Ошибка: пустая страница релизов.', updated_configs)
+
     table = soup.find('table', id='actualTable')
-    if not table: return ('Ошибка таблицы.', updated_configs)
+    if not table: 
+        return ('Ошибка: не найдена таблица релизов.', updated_configs)
 
     site_configs = {}
     for row in table.find_all('tr'):
@@ -85,17 +92,32 @@ def parse_versions_from_soup(soup, configs_data: list):
                 d_text = all_dates[idx] if idx < len(all_dates) else "н/д"
                 
                 is_dp = False
-                nxt = a_tag.find_next_sibling()
-                if nxt and nxt.name == 'sup' and nxt.find('abbr', title=re.compile('Длительная')):
+                # Поиск метки ДП
+                next_el = a_tag.next_sibling
+                while next_el and (isinstance(next_el, NavigableString) and not next_el.strip()):
+                    next_el = next_el.next_sibling
+                
+                if next_el and next_el.name == 'sup' and next_el.find('abbr', title=re.compile('Длительная')):
                     is_dp = True
                 
                 found_versions.append({'ver': v_text, 'date': d_text, 'is_dp': is_dp})
 
+        found_versions.sort(key=lambda x: version_tuple(x['ver']), reverse=True)
+
         latest_obj = found_versions[0] if found_versions else None
+        
+        # Ищем явную ДП
         dp_obj = next((v for v in found_versions if v['is_dp']), None)
+        
+        # ИСПРАВЛЕНИЕ: Если явной ДП нет, берем самую новую (Latest)
+        if not dp_obj:
+            dp_obj = latest_obj
 
         track_type = config.get('track_type', 'latest')
+        branch_filter = config.get('branch_filter', '')
+        
         last_ver_saved = config.get('last_version', '')
+        last_date_saved = config.get('last_date', '')
         was_already_new = config.get('is_new', False)
         
         save_ver = ""
@@ -103,11 +125,108 @@ def parse_versions_from_soup(soup, configs_data: list):
         display_lines = []
         detected_change = False
 
-        # ИСПОЛЬЗУЕМ КОНСТАНТЫ ВМЕСТО ХАРДКОДА
         def format_line(icon, ver, date, mark):
             return f"{mark} {icon} `{escape_markdown(ver)}` {SEPARATOR_SYMBOL} `{escape_markdown(date)}`"
 
-        if track_type == 'both':
+        # --- ЛОГИКА ВЫБОРА ВЕРСИИ ---
+        
+        if track_type == 'specific':
+            # 1. Ищем на главной
+            target_obj = next((v for v in found_versions if v['ver'].startswith(branch_filter)), None)
+            
+            # 2. Если нет на главной, проваливаемся внутрь
+            if not target_obj and session:
+                name_cell = found_row.find('td', class_='nameColumn')
+                link_tag = name_cell.find('a') if name_cell else None
+                if link_tag and link_tag.has_attr('href'):
+                    config_url = 'https://releases.1c.ru' + link_tag['href']
+                    deep_ver, deep_date = get_version_from_detailed_page(session, config_url, branch_filter)
+                    if deep_ver:
+                        target_obj = {'ver': deep_ver, 'date': deep_date}
+
+            if not target_obj:
+                display_lines.append(f"⚠️ Ветка `{escape_markdown(branch_filter)}` не найдена")
+                save_ver = last_ver_saved 
+                save_date = last_date_saved
+            else:
+                curr_ver = target_obj['ver']
+                raw_date = target_obj.get('date', '')
+                if not raw_date or raw_date == 'н/д':
+                    if not last_date_saved:
+                        curr_date = datetime.now().strftime('%d.%m.%y')
+                    else:
+                        curr_date = last_date_saved
+                else:
+                    curr_date = raw_date
+
+                is_ver_changed = (curr_ver != last_ver_saved) and bool(last_ver_saved)
+                if is_ver_changed: detected_change = True
+                
+                mark = ICON_NEW_VERSION if (is_ver_changed or was_already_new) else ICON_OK
+                
+                display_lines.append(format_line(ICON_SPECIFIC_TYPE, curr_ver, curr_date, mark))
+                save_ver = curr_ver
+                save_date = curr_date
+
+        elif track_type == 'specific_dp':
+            # --- ЧАСТЬ 1: ВЕТКА (с проваливанием) ---
+            target_spec = next((v for v in found_versions if v['ver'].startswith(branch_filter)), None)
+            
+            if not target_spec and session:
+                name_cell = found_row.find('td', class_='nameColumn')
+                link_tag = name_cell.find('a') if name_cell else None
+                if link_tag and link_tag.has_attr('href'):
+                    config_url = 'https://releases.1c.ru' + link_tag['href']
+                    deep_ver, deep_date = get_version_from_detailed_page(session, config_url, branch_filter)
+                    if deep_ver:
+                        target_spec = {'ver': deep_ver, 'date': deep_date}
+
+            # --- ЧАСТЬ 2: ДП (или Latest, если ДП нет) ---
+            target_dp = dp_obj # Здесь уже лежит либо ДП, либо Latest
+            
+            old_parts = last_ver_saved.split('|') if '|' in last_ver_saved else [last_ver_saved, '']
+            old_spec = old_parts[0]
+            old_dp = old_parts[1] if len(old_parts) > 1 else ''
+            
+            old_date_parts = last_date_saved.split('|') if '|' in last_date_saved else [last_date_saved, '']
+            old_spec_date = old_date_parts[0]
+
+            # Обработка ветки
+            if not target_spec:
+                display_lines.append(f"⚠️ Ветка `{escape_markdown(branch_filter)}` не найдена")
+                curr_spec_ver = old_spec
+                curr_spec_date = old_spec_date
+            else:
+                curr_spec_ver = target_spec['ver']
+                raw_spec_date = target_spec.get('date', '')
+                if not raw_spec_date or raw_spec_date == 'н/д':
+                    if not old_spec_date or old_spec_date == '-':
+                        curr_spec_date = datetime.now().strftime('%d.%m.%y')
+                    else:
+                        curr_spec_date = old_spec_date
+                else:
+                    curr_spec_date = raw_spec_date
+                
+                is_spec_changed = (curr_spec_ver != old_spec) and bool(old_spec)
+                if is_spec_changed: detected_change = True
+                
+                mark_spec = ICON_NEW_VERSION if (is_spec_changed or was_already_new) else ICON_OK
+                display_lines.append(format_line(ICON_SPECIFIC_TYPE, curr_spec_ver, curr_spec_date, mark_spec))
+
+            # Обработка ДП
+            curr_dp_ver = target_dp['ver'] if target_dp else "Нет"
+            curr_dp_date = target_dp['date'] if target_dp else "-"
+            
+            is_dp_changed = (curr_dp_ver != old_dp) and bool(old_dp)
+            if is_dp_changed: detected_change = True
+            
+            mark_dp = ICON_NEW_VERSION if (is_dp_changed or was_already_new) else ICON_OK
+            display_lines.append(format_line(ICON_LTS_TYPE, curr_dp_ver, curr_dp_date, mark_dp))
+
+            save_ver = f"{curr_spec_ver}|{curr_dp_ver}"
+            save_date = f"{curr_spec_date}|{curr_dp_date}"
+
+        elif track_type == 'both':
             old_parts = last_ver_saved.split('|') if '|' in last_ver_saved else [last_ver_saved, '']
             old_new = old_parts[0]
             old_dp = old_parts[1] if len(old_parts) > 1 else ''
@@ -118,10 +237,7 @@ def parse_versions_from_soup(soup, configs_data: list):
             is_ver_changed = (curr_new_ver != old_new) and bool(old_new)
             if is_ver_changed: detected_change = True
             
-            # ЛОГИКА ВЫБОРА ИКОНКИ СТАТУСА
             mark_new = ICON_NEW_VERSION if (is_ver_changed or was_already_new) else ICON_OK
-            if not old_new: mark_new = "🆕" # Для самого первого запуска можно оставить 🆕
-            
             display_lines.append(format_line(ICON_LATEST_TYPE, curr_new_ver, curr_new_date, mark_new))
 
             curr_dp_ver = dp_obj['ver'] if dp_obj else "Нет"
@@ -131,19 +247,18 @@ def parse_versions_from_soup(soup, configs_data: list):
             if is_dp_changed: detected_change = True
             
             mark_dp = ICON_NEW_VERSION if (is_dp_changed or was_already_new) else ICON_OK
-            if not old_dp: mark_dp = "🆕"
-
             display_lines.append(format_line(ICON_LTS_TYPE, curr_dp_ver, curr_dp_date, mark_dp))
 
             save_ver = f"{curr_new_ver}|{curr_dp_ver}"
             save_date = f"{curr_new_date}|{curr_dp_date}"
 
         else:
+            # latest или dp
             target_obj = None
             icon = ICON_LATEST_TYPE
             
             if track_type == 'dp':
-                target_obj = dp_obj if dp_obj else latest_obj
+                target_obj = dp_obj # Теперь здесь всегда есть версия (ДП или Latest)
                 icon = ICON_LTS_TYPE
             else:
                 target_obj = latest_obj
@@ -156,8 +271,6 @@ def parse_versions_from_soup(soup, configs_data: list):
             if is_ver_changed: detected_change = True
             
             mark = ICON_NEW_VERSION if (is_ver_changed or was_already_new) else ICON_OK
-            if not last_ver_saved: mark = "🆕"
-            
             display_lines.append(format_line(icon, curr_ver, curr_date, mark))
             
             save_ver = curr_ver
@@ -171,6 +284,54 @@ def parse_versions_from_soup(soup, configs_data: list):
         results_text.append(block_text)
 
     return ('\n\n'.join(results_text), updated_configs)
+
+def get_version_from_detailed_page(session, config_url, branch_filter):
+    try:
+        r = session.get(config_url)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.content, 'html.parser')
+        
+        all_updates_link = soup.find('a', href=re.compile(r'\?allUpdates=true'))
+        if all_updates_link:
+            href = all_updates_link['href']
+            if not href.startswith('http'):
+                base = 'https://releases.1c.ru'
+                if not href.startswith('/'):
+                    parent = config_url.split('?')[0]
+                    if href.startswith('?'):
+                        url = parent + href
+                    else:
+                        url = base + href
+                else:
+                    url = base + href
+            else:
+                url = href
+            
+            r2 = session.get(url)
+            if r2.status_code == 200:
+                soup = BeautifulSoup(r2.content, 'html.parser')
+
+        table = soup.find('table', id='versionsTable')
+        if not table: return None, None
+        
+        versions = []
+        for row in table.find_all('tr')[1:]:
+            cols = row.find_all('td')
+            if len(cols) >= 2:
+                ver_text = cols[0].get_text(strip=True)
+                date_text = cols[1].get_text(strip=True)
+                
+                if ver_text.startswith(branch_filter):
+                    versions.append((ver_text, date_text))
+        
+        if not versions: return None, None
+        
+        versions.sort(key=lambda x: version_tuple(x[0]), reverse=True)
+        return versions[0]
+        
+    except Exception as e:
+        logger.error(f"Ошибка парсинга детальной страницы {config_url}: {e}")
+        return None, None
 
 def get_target_versions(session: requests.Session, config_name: str) -> tuple:
     try:
@@ -251,7 +412,6 @@ def find_update_path(session: requests.Session, config_name: str, start_version:
         releases_response.raise_for_status()
         releases_soup = BeautifulSoup(releases_response.content, 'html.parser')
         
-        # --- УЛУЧШЕННЫЙ ПОИСК КОНФИГУРАЦИИ ---
         table = releases_soup.find('table', id='actualTable')
         if not table:
             return 'Не удалось найти таблицу релизов.'
@@ -263,7 +423,6 @@ def find_update_path(session: requests.Session, config_name: str, start_version:
             name_cell = row.find('td', class_='nameColumn')
             if name_cell:
                 site_name = normalize_text(name_cell.get_text(separator=' ', strip=True))
-                # Точное совпадение или вхождение
                 if site_name == normalized_name or (normalized_name in site_name and len(site_name) - len(normalized_name) < 5):
                     config_link_tag = name_cell.find('a')
                     break
@@ -278,14 +437,11 @@ def find_update_path(session: requests.Session, config_name: str, start_version:
         initial_soup = BeautifulSoup(config_page_response.content, 'html.parser')
         updates_soup = initial_soup
         
-        # Проверяем наличие страницы "Все обновления" (обычно для старых версий она нужна)
         all_updates_link_tag = initial_soup.find('a', href=re.compile(r'\?allUpdates=true'))
         if all_updates_link_tag:
             base_url = 'https://releases.1c.ru'
-            # Корректное формирование URL
             href = all_updates_link_tag['href']
             if not href.startswith('/'):
-                # Иногда ссылка относительная от текущей страницы
                 parent_url = config_link_tag['href'].split('?')[0]
                 all_updates_url = base_url + parent_url + href
             else:
@@ -299,12 +455,11 @@ def find_update_path(session: requests.Session, config_name: str, start_version:
         if not updates_table:
             return 'Не удалось найти таблицу с историей обновлений на странице конфигурации.'
 
-        rows = updates_table.find_all('tr')[1:] # Пропускаем заголовок
+        rows = updates_table.find_all('tr')[1:] 
         current_version = start_version.strip()
         actual_target = dp_target
         message_prefix = ''
 
-        # Если текущая версия новее ДП, целимся в обычную
         if version_tuple(current_version) > version_tuple(dp_target):
             actual_target = non_dp_target
             message_prefix = f'Ваша версия `{escape_markdown(current_version)}` новее версии на ДП `{escape_markdown(dp_target)}`\\. Расчет выполняется до версии не на длительной поддержке\\.\n\n'
@@ -315,14 +470,12 @@ def find_update_path(session: requests.Session, config_name: str, start_version:
         predecessors = {}
         transitions = {} 
         
-        # Собираем граф переходов
         found_start_version = False
         
         for row in rows:
             cols = row.find_all('td')
             if len(cols) < 3: continue
             to_version = cols[0].get_text(strip=True)
-            # Очищаем от лишних пробелов и разбиваем
             from_versions_raw = cols[2].get_text(strip=True)
             from_versions = [v.strip() for v in from_versions_raw.split(',') if v.strip()]
             
@@ -334,13 +487,11 @@ def find_update_path(session: requests.Session, config_name: str, start_version:
             for fv in from_versions:
                 if fv not in transitions:
                     transitions[fv] = []
-                # is_dp здесь не критично для алгоритма, но можно сохранить
                 transitions[fv].append({'version': to_version})
 
         if not found_start_version:
              return message_prefix + f'⚠️ Версия `{escape_markdown(current_version)}` не найдена в списке обновлений 1С\\. Возможно, она слишком старая или указана с ошибкой\\.'
 
-        # BFS назад от цели, чтобы найти все версии, из которых можно попасть в цель
         reachable_versions = {actual_target}
         queue = [actual_target]
         while queue:
@@ -351,14 +502,12 @@ def find_update_path(session: requests.Session, config_name: str, start_version:
                         reachable_versions.add(prev_ver)
                         queue.append(prev_ver)
 
-        # Жадный алгоритм вперед: выбираем самый дальний прыжок, который ведет к цели
         count = 0
         max_steps = 100
         path_log = []
         
         while current_version != actual_target and count < max_steps:
             possible_next_steps = transitions.get(current_version, [])
-            # Фильтруем только те шаги, которые ведут к цели
             valid_steps = [step for step in possible_next_steps if step['version'] in reachable_versions]
 
             if not valid_steps:
@@ -366,7 +515,6 @@ def find_update_path(session: requests.Session, config_name: str, start_version:
                     return message_prefix + f'Пройдено *{count}* обновлений до версии `{escape_markdown(current_version)}`\\. Дальнейший путь прерван (тупик)\\.'
                 return message_prefix + f'Не удалось найти путь обновления от `{escape_markdown(start_version)}` до `{escape_markdown(actual_target)}`\\.'
 
-            # Выбираем версию с максимальным номером (самый длинный прыжок)
             chosen_step = max(valid_steps, key=lambda x: version_tuple(x['version']))
 
             current_version = chosen_step['version']

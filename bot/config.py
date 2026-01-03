@@ -20,9 +20,9 @@ os.makedirs(LOG_DIR, exist_ok=True)
 USER_DATA_DIR = Path(BASE_PATH) / 'data' / 'user_data'
 
 # --- КОНСТАНТЫ СОСТОЯНИЙ ---
-# Добавлено GET_CONFIG_TYPE
-GET_CONFIG_NAME, GET_CONFIG_TYPE, SELECT_CONFIG, GET_MANUAL_CONFIG, GET_CURRENT_VERSION = range(5)
-GET_REG_TEXT = 5
+# Добавлено GET_SPECIFIC_BRANCH
+GET_CONFIG_NAME, GET_CONFIG_TYPE, GET_SPECIFIC_BRANCH, SELECT_CONFIG, GET_MANUAL_CONFIG, GET_CURRENT_VERSION = range(6)
+GET_REG_TEXT = 6
 
 # --- ЛОГИРОВАНИЕ ---
 def setup_logging():
@@ -48,7 +48,6 @@ def setup_logging():
         sys.stderr = open(os.path.join(LOG_DIR, 'critical_errors.log'), 'a', encoding='utf-8')
     except Exception:
         pass
-        
 
 # --- ЗАГРУЗКА НАСТРОЕК ---
 def load_settings():
@@ -87,6 +86,7 @@ ICON_OK = "✅"           # Версия актуальна
 # Типы конфигураций
 ICON_LATEST_TYPE = "🔥"  # Обычная версия (можно заменить на 🔹 или 📦)
 ICON_LTS_TYPE = "🛡"     # Длительная поддержка (можно заменить на 🔸 или 🏛)
+ICON_SPECIFIC_TYPE = "🎯"
 
 # Разделитель между версией и датой
 # Используем стрелку, она хорошо заметна и не похожа на цифры
