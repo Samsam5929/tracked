@@ -478,8 +478,8 @@ def find_update_path(session: requests.Session, config_name: str, start_version:
             message_prefix = f'Ваша версия `{escape_markdown(current_version)}` новее версии на ДП `{escape_markdown(dp_target)}`\\. Расчет выполняется до версии не на длительной поддержке\\.\n\n'
 
         if current_version == actual_target:
-            # ИСПРАВЛЕНИЕ: Экранированы скобки ( ) и точка . для MarkdownV2
-            return message_prefix + f'Ваша версия `{escape_markdown(start_version)}` уже является целевой \(`{escape_markdown(actual_target)}`\)\.'
+            # ИСПРАВЛЕНИЕ: rf-строка, чтобы убрать SyntaxWarning
+            return message_prefix + rf'Ваша версия `{escape_markdown(start_version)}` уже является целевой \(`{escape_markdown(actual_target)}`\)\.'
 
         predecessors = {}
         transitions = {} 

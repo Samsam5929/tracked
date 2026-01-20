@@ -77,3 +77,10 @@ def save_bot_state(user_id: int, data): _save_json(user_id, 'state.json', data)
 
 def load_mappings(user_id: int): return _load_json(user_id, 'mappings.json', {})
 def save_mappings(user_id: int, data): _save_json(user_id, 'mappings.json', data)
+
+def load_cleanup_ignore(user_id: int):
+    # Возвращает список строк (имен баз)
+    return _load_json(user_id, 'cleanup_ignore.json', [])
+
+def save_cleanup_ignore(user_id: int, data: list):
+    _save_json(user_id, 'cleanup_ignore.json', data)

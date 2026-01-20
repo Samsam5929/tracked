@@ -15,7 +15,7 @@ from bot.config import (
     setup_logging, TELEGRAM_TOKEN, ADMIN_USER_ID, 
     TIMEZONE, SCHEDULE_HOUR, SCHEDULE_MINUTE, USER_DATA_DIR,
     GET_CONFIG_NAME, GET_CONFIG_TYPE, GET_SPECIFIC_BRANCH, SELECT_CONFIG, 
-    GET_MANUAL_CONFIG, GET_CURRENT_VERSION, GET_REG_TEXT
+    GET_MANUAL_CONFIG, GET_CURRENT_VERSION, GET_REG_TEXT, GET_CLEANUP_TEXT, GET_IGNORE_NAME
 )
 from bot import handlers
 
@@ -119,12 +119,35 @@ def main():
         },
         fallbacks=[CallbackQueryHandler(handlers.cancel_update_check, pattern='^cancel_update_check$')]
     )
+    
+    cleanup_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(handlers.cleanup_start, pattern='^cleanup_start$')],
+        states={
+            GET_CLEANUP_TEXT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.process_cleanup_text)
+            ]
+        },
+        fallbacks=[
+            CallbackQueryHandler(handlers.cancel_cleanup, pattern='^cancel_cleanup$'),
+            CallbackQueryHandler(handlers.main_menu_callback, pattern='^main_menu$')
+        ]
+    )
+    
+    add_ignore_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(handlers.add_ignore_start, pattern='^add_ignore_start$')],
+        states={
+            GET_IGNORE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.add_ignore_save)]
+        },
+        fallbacks=[CallbackQueryHandler(handlers.cancel_add_ignore, pattern='^cancel_add_ignore$')]
+    )
 
     application.add_handler(CommandHandler('start', handlers.start))
     application.add_handler(CommandHandler('help', handlers.help_command))
     application.add_handler(add_handler)
     application.add_handler(update_handler)
     application.add_handler(reg_handler)
+    application.add_handler(cleanup_handler)
+    application.add_handler(add_ignore_handler)
     
     application.add_handler(CallbackQueryHandler(handlers.get_versions_callback, pattern='^get_versions$'))
     application.add_handler(CallbackQueryHandler(handlers.main_menu_callback, pattern='^main_menu$'))
@@ -133,8 +156,12 @@ def main():
     application.add_handler(CallbackQueryHandler(handlers.remove_config_menu, pattern='^remove_config_menu$'))
     application.add_handler(CallbackQueryHandler(handlers.remove_config_callback, pattern='^remove_\\d+$'))
     
+    
     application.add_handler(CallbackQueryHandler(handlers.change_type_menu, pattern='^change_type_menu$'))
     application.add_handler(CallbackQueryHandler(handlers.change_type_select_callback, pattern='^chtype_sel_\\d+$'))
+    
+    application.add_handler(CallbackQueryHandler(handlers.manage_ignore_menu, pattern='^manage_ignore_menu$'))
+    application.add_handler(CallbackQueryHandler(handlers.delete_ignore_callback, pattern='^del_ign_'))
     
     # ИСПРАВЛЕНО: Добавлены specific и specific_dp в паттерн
     application.add_handler(CallbackQueryHandler(handlers.change_type_save_callback, pattern='^type_(latest|dp|both|specific|specific_dp)$'))
