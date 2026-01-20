@@ -29,7 +29,7 @@ def setup_logging():
     log_file_path = os.path.join(LOG_DIR, 'bot.log')
     
     rotating_handler = TimedRotatingFileHandler(
-        log_file_path, when='midnight', interval=1, backupCount=1, encoding='utf-8'
+        log_file_path, when='midnight', interval=1, backupCount=7, encoding='utf-8'
     )
     rotating_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 

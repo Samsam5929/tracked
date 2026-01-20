@@ -204,12 +204,25 @@ async def manage_list_menu_callback(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     user_id = update.effective_user.id
     await query.answer()
-    await send_or_edit_message(context, user_id, 'Управление списком конфигураций:', get_manage_keyboard())
+    # ИЗМЕНЕНИЕ: Более понятный заголовок
+    text = (
+        "⚙️ *Настройки списка*\n\n"
+        "Здесь вы можете добавлять и удалять базы, менять режим отслеживания (ЛТС/Обычная) "
+        "и настраивать словарь для помощника регистрации\\."
+    )
+    await send_or_edit_message(context, user_id, text, get_manage_keyboard())
 
 async def add_config_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    prompt_message = await query.edit_message_text(text='Пришлите мне полное название конфигурации для отслеживания.')
+    
+    # ИЗМЕНЕНИЕ: Добавлена кнопка отмены действия
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton('⬅️ Главное меню', callback_data='main_menu')]])
+    
+    prompt_message = await query.edit_message_text(
+        text='Пришлите мне полное название конфигурации для отслеживания.',
+        reply_markup=keyboard  # <-- Добавили клавиатуру
+    )
     context.user_data['prompt_message_id'] = prompt_message.message_id
     return GET_CONFIG_NAME
 
@@ -443,7 +456,10 @@ async def check_updates_start(update: Update, context: ContextTypes.DEFAULT_TYPE
         for i, config in enumerate(configs):
             keyboard.append([InlineKeyboardButton(config['name'], callback_data=f'select_config_{i}')])
     keyboard.append([InlineKeyboardButton('⌨️ Ввести вручную', callback_data='manual_config')])
-    keyboard.append([InlineKeyboardButton('⬅️ Отмена', callback_data='cancel_update_check')])
+    
+    # ИЗМЕНЕНИЕ: Текст кнопки
+    keyboard.append([InlineKeyboardButton('⬅️ Главное меню', callback_data='cancel_update_check')])
+    
     await query.edit_message_text(text='Выберите конфигурацию для проверки или введите ее название вручную:', reply_markup=InlineKeyboardMarkup(keyboard))
     return SELECT_CONFIG
 
@@ -644,7 +660,9 @@ async def reg_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     await query.edit_message_text(
         text='Пожалуйста, отправьте текст с данными арендаторов (можно скопировать сразу несколько блоков).',
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('⬅️ Отмена', callback_data='cancel_reg')]])
+        
+        # ИЗМЕНЕНИЕ: Текст кнопки
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('⬅️ Главное меню', callback_data='cancel_reg')]])
     )
     return GET_REG_TEXT
 

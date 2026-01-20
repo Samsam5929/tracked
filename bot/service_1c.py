@@ -75,8 +75,21 @@ def parse_versions_from_soup(soup, configs_data: list, session: requests.Session
             continue
 
         ver_cell = found_row.find('td', class_='versionColumn')
+        
+        # --- ДОБАВЛЕНА ЗАЩИТА ---
+        if not ver_cell:
+            results_text.append(f'⚠️ *{safe_name}*\n   └ Ошибка парсинга: не найдена колонка версии')
+            logger.warning(f"Не найдена versionColumn для {config['name']}")
+            continue
+        # ------------------------
+
         date_cell = ver_cell.find_next_sibling('td')
         
+        # На всякий случай проверяем и date_cell, хотя это менее критично
+        if not date_cell:
+             results_text.append(f'⚠️ *{safe_name}*\n   └ Ошибка парсинга: не найдена дата')
+             continue
+
         all_a = ver_cell.find_all('a')
         all_dates = list(date_cell.stripped_strings)
         
@@ -465,7 +478,8 @@ def find_update_path(session: requests.Session, config_name: str, start_version:
             message_prefix = f'Ваша версия `{escape_markdown(current_version)}` новее версии на ДП `{escape_markdown(dp_target)}`\\. Расчет выполняется до версии не на длительной поддержке\\.\n\n'
 
         if current_version == actual_target:
-            return message_prefix + f'Ваша версия `{escape_markdown(start_version)}` уже является целевой (`{escape_markdown(actual_target)}`).'
+            # ИСПРАВЛЕНИЕ: Экранированы скобки ( ) и точка . для MarkdownV2
+            return message_prefix + f'Ваша версия `{escape_markdown(start_version)}` уже является целевой \(`{escape_markdown(actual_target)}`\)\.'
 
         predecessors = {}
         transitions = {} 
