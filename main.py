@@ -15,7 +15,8 @@ from bot.config import (
     setup_logging, TELEGRAM_TOKEN, ADMIN_USER_ID, 
     TIMEZONE, SCHEDULE_HOUR, SCHEDULE_MINUTE, USER_DATA_DIR,
     GET_CONFIG_NAME, GET_CONFIG_TYPE, GET_SPECIFIC_BRANCH, SELECT_CONFIG, 
-    GET_MANUAL_CONFIG, GET_CURRENT_VERSION, GET_REG_TEXT, GET_CLEANUP_TEXT, GET_IGNORE_NAME
+    GET_MANUAL_CONFIG, GET_CURRENT_VERSION, GET_REG_TEXT, GET_CLEANUP_TEXT, GET_IGNORE_NAME,
+    SELECT_CONFIG_CANDIDATE
 )
 from bot import handlers
 
@@ -100,6 +101,13 @@ def main():
         entry_points=[CallbackQueryHandler(handlers.add_config_start, pattern='^add_config_start$')],
         states={
             GET_CONFIG_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_new_config_name)],
+            
+            # --- НОВОЕ СОСТОЯНИЕ ---
+            SELECT_CONFIG_CANDIDATE: [
+                CallbackQueryHandler(handlers.handle_config_candidate_selection, pattern='^cand_')
+            ],
+            # -----------------------
+            
             GET_CONFIG_TYPE: [CallbackQueryHandler(handlers.handle_new_config_type, pattern='^type_')],
             GET_SPECIFIC_BRANCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_specific_branch_input)]
         },

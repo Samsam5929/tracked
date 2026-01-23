@@ -25,6 +25,7 @@ GET_CONFIG_NAME, GET_CONFIG_TYPE, GET_SPECIFIC_BRANCH, SELECT_CONFIG, GET_MANUAL
 GET_REG_TEXT = 6
 GET_CLEANUP_TEXT = 7
 GET_IGNORE_NAME = 8
+SELECT_CONFIG_CANDIDATE = 9
 
 # --- ЛОГИРОВАНИЕ ---
 def setup_logging():
@@ -93,3 +94,6 @@ ICON_SPECIFIC_TYPE = "🎯"
 # Разделитель между версией и датой
 # Используем стрелку, она хорошо заметна и не похожа на цифры
 SEPARATOR_SYMBOL = "от"
+
+GLOBAL_CACHE_FILE = USER_DATA_DIR / 'global_cache.json'
+UPDATE_MATRIX_FILE = USER_DATA_DIR / 'update_matrices.json'

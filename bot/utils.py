@@ -2,8 +2,13 @@ import re
 import html
 
 def escape_markdown(text: str) -> str:
-    escape_chars = '_*[]()~`>#+-=|{}.!'
-    return re.sub(f'([{re.escape(escape_chars)}])', '\\\\\\1', str(text))
+    """
+    Полное экранирование для MarkdownV2 согласно документации Telegram.
+    """
+    if not text: return ""
+    # Полный список спецсимволов MarkdownV2
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', str(text))
 
 def normalize_text(text):
     """Для поиска конфигураций на сайте (приводит к нижнему регистру)."""
@@ -104,3 +109,27 @@ def parse_saas_bases(text: str, ignore_list: list = None) -> list:
             results.append(base_name)
             
     return results
+
+def split_long_text(text: str, max_length: int = 4000) -> list[str]:
+    """
+    Разбивает длинный текст на части по переносам строк, 
+    чтобы не превысить лимит Telegram (4096).
+    """
+    if len(text) <= max_length:
+        return [text]
+    
+    parts = []
+    while len(text) > max_length:
+        # Ищем ближайший перенос строки перед лимитом
+        split_idx = text.rfind('\n', 0, max_length)
+        if split_idx == -1:
+            # Если переносов нет, режем жестко
+            split_idx = max_length
+        
+        parts.append(text[:split_idx])
+        text = text[split_idx:].lstrip() # Удаляем ведущий перенос
+    
+    if text:
+        parts.append(text)
+        
+    return parts

@@ -3,7 +3,7 @@ import os
 import logging
 import shutil
 from pathlib import Path
-from .config import USER_DATA_DIR
+from .config import USER_DATA_DIR, GLOBAL_CACHE_FILE, UPDATE_MATRIX_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -84,3 +84,51 @@ def load_cleanup_ignore(user_id: int):
 
 def save_cleanup_ignore(user_id: int, data: list):
     _save_json(user_id, 'cleanup_ignore.json', data)
+    
+def load_global_cache():
+    """Загружает глобальный кэш всех версий 1С."""
+    if not GLOBAL_CACHE_FILE.exists():
+        # Возвращаем пустую структуру, совместимую с новой логикой
+        return {'updated_at': '', 'data': {}}
+        
+    try:
+        with open(GLOBAL_CACHE_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            # Если вдруг файл старого формата (просто список или что-то еще), вернем дефолт
+            if not isinstance(data, dict):
+                return {'updated_at': '', 'data': {}}
+            return data
+    except Exception as e:
+        logger.error(f"Ошибка чтения глобального кэша: {e}")
+        return {'updated_at': '', 'data': {}}
+
+def save_global_cache(data: dict):
+    """Сохраняет глобальный кэш."""
+    temp_path = GLOBAL_CACHE_FILE.with_suffix('.tmp')
+    try:
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        os.replace(temp_path, GLOBAL_CACHE_FILE)
+    except Exception as e:
+        logger.error(f"Ошибка записи глобального кэша: {e}")
+        
+def load_matrix_cache():
+    """Загружает кэш матриц обновлений."""
+    if not UPDATE_MATRIX_FILE.exists():
+        return {}
+    try:
+        with open(UPDATE_MATRIX_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Ошибка чтения кэша матриц: {e}")
+        return {}
+
+def save_matrix_cache(data: dict):
+    """Сохраняет кэш матриц."""
+    temp_path = UPDATE_MATRIX_FILE.with_suffix('.tmp')
+    try:
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        os.replace(temp_path, UPDATE_MATRIX_FILE)
+    except Exception as e:
+        logger.error(f"Ошибка записи кэша матриц: {e}")

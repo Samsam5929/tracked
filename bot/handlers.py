@@ -55,8 +55,8 @@ def format_version_list_from_storage(user_id: int):
         
         display_lines = []
         
-        # Исправлено: не экранируем ver и date, так как они внутри блока кода
         def format_line(icon, ver, date, mark):
+            # ver и date не экранируем, так как они внутри блока кода `...`
             return f"{mark} {icon} `{ver}` {SEPARATOR_SYMBOL} `{date}`"
         
         if not last_version or not last_date:
@@ -75,7 +75,7 @@ def format_version_list_from_storage(user_id: int):
                 
                 line1 = format_line(icon_primary, v_primary, d_primary, status_mark)
                 if track_type == 'specific_dp' and branch_filter:
-                    line1 += f" \\(фильтр: `{branch_filter}`\\)"
+                    line1 += f" \\(фильтр: `{escape_markdown(branch_filter)}`\\)"
                 
                 display_lines.append(line1)
                 display_lines.append(format_line(ICON_LTS_TYPE, v_dp, d_dp, status_mark))
@@ -88,7 +88,7 @@ def format_version_list_from_storage(user_id: int):
                 line = format_line(icon, last_version, last_date, status_mark)
                 
                 if (track_type == 'specific' or track_type == 'specific_dp') and branch_filter:
-                    line += f" \\(фильтр: `{branch_filter}`\\)"
+                    line += f" \\(фильтр: `{escape_markdown(branch_filter)}`\\)"
                 
                 display_lines.append(line)
 
@@ -125,70 +125,107 @@ async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def daily_version_check(context: ContextTypes.DEFAULT_TYPE):
     logger.info('ЗАПУСК ежедневной проверки...')
-    if not USER_DATA_DIR.exists():
-        return
+    if not USER_DATA_DIR.exists(): return
 
-    session, error = await asyncio.to_thread(service_1c.login_to_1c)
+    # Используем кэшированную сессию (она сама перелогинится если надо)
+    session, error = await asyncio.to_thread(service_1c.get_cached_session)
     if error or not session:
-        logger.error(f"Ежедневная проверка пропущена: {error}")
+        logger.error(f"Daily check login failed: {error}")
         return
 
-    try:  # <--- Оберни работу с сессией в try/finally
-        soup, soup_error = await asyncio.to_thread(service_1c.get_releases_soup, session)
-        if soup_error or not soup:
-            logger.error(f"Ежедневная проверка пропущена (ошибка получения таблицы): {soup_error}")
-            return
-
+    try:
+        # 1. Обновляем ГЛОБАЛЬНЫЙ СПИСОК (Releases)
+        has_updates, cache_error = await asyncio.to_thread(service_1c.refresh_global_cache, session, force=False)
+        
+        if cache_error:
+            logger.error(f"Cache update error: {cache_error}")
+            
+        # 2. Собираем список отслеживаемых конфигураций
+        all_tracked_configs = set()
         user_ids = [int(p.name) for p in USER_DATA_DIR.iterdir() if p.is_dir() and p.name.isdigit()]
         
         for user_id in user_ids:
-            # ДОБАВИТЬ ОТСТУП (TAB или 4 пробела) для всего блока try/except ниже
-            try:
-                user_configs = load_configs(user_id)
-                if not user_configs: continue
-                
-                result_text, updated_configs = await asyncio.to_thread(service_1c.parse_versions_from_soup, soup, user_configs, session)
-                save_configs(user_id, updated_configs)
-                
-                full_text = escape_markdown('🗓️ *Ежедневная проверка:*\n\n') + result_text
-                await send_or_edit_message(context, user_id, full_text, get_main_keyboard(user_id, updated_configs, show_ack_button=True))
-                
-            except Forbidden:
-                logger.warning(f'Пользователь {user_id} заблокировал бота. Пропускаем.')
-            except Exception as e:
-                logger.error(f'Ошибка проверки для {user_id}: {e}')
-            
+            configs = load_configs(user_id)
+            for c in configs:
+                all_tracked_configs.add(c['name'])
+        
+        # 3. Обновляем МАТРИЦЫ только для нужных баз
+        if all_tracked_configs:
+            logger.info(f"Запуск обновления матриц для {len(all_tracked_configs)} конфигураций...")
+            await asyncio.to_thread(service_1c.update_matrices_for_list, session, list(all_tracked_configs))
+
+        # 4. Рассылка
+        if has_updates:
+            logger.info("Рассылка уведомлений пользователям...")
+            for user_id in user_ids:
+                try:
+                    user_configs = load_configs(user_id)
+                    if not user_configs: continue
+                    
+                    result_text, updated_configs = await asyncio.to_thread(
+                        service_1c.sync_user_configs_with_cache, user_configs, session
+                    )
+                    save_configs(user_id, updated_configs)
+                    
+                    if any(c.get('is_new') for c in updated_configs):
+                        full_text = escape_markdown('🗓️ *Найдены обновления 1С:*\n\n') + result_text
+                        await send_or_edit_message(context, user_id, full_text, get_main_keyboard(user_id, updated_configs, show_ack_button=True))
+                except Exception as e:
+                    logger.error(f'Error user {user_id}: {e}')
+                    
     finally:
-        session.close()
+        # Сессию не закрываем, она живет в service_1c
+        pass
 
 async def get_versions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ручная проверка (онлайн)."""
     user_id = update.effective_user.id
     if update.callback_query:
         await update.callback_query.answer()
         try: await update.callback_query.message.delete()
         except: pass
         
-        msg = await context.bot.send_message(chat_id=user_id, text='⏳ Идет проверка, пожалуйста, подождите...')
+        msg = await context.bot.send_message(chat_id=user_id, text='⏳ Синхронизация с сайтом 1С...')
         bot_state = load_bot_state(user_id)
         bot_state['main_menu_message_id'] = msg.message_id
         save_bot_state(user_id, bot_state)
     
-    session, error = await asyncio.to_thread(service_1c.login_to_1c)
+    session, error = await asyncio.to_thread(service_1c.get_cached_session)
     if error:
-        await send_or_edit_message(context, user_id, f"Ошибка: {escape_markdown(error)}", get_main_keyboard(user_id))
+        await send_or_edit_message(context, user_id, f"Ошибка входа: {escape_markdown(error)}", get_main_keyboard(user_id))
         return ConversationHandler.END
 
-    soup, soup_error = await asyncio.to_thread(service_1c.get_releases_soup, session)
-    if soup_error:
-        await send_or_edit_message(context, user_id, f"Ошибка: {escape_markdown(soup_error)}", get_main_keyboard(user_id))
-        return ConversationHandler.END
+    try:
+        # Обновляем глобальный кэш
+        has_updates, cache_error = await asyncio.to_thread(service_1c.refresh_global_cache, session, force=False)
+        
+        if cache_error:
+             await send_or_edit_message(context, user_id, f"Ошибка: {escape_markdown(cache_error)}", get_main_keyboard(user_id))
+             return ConversationHandler.END
 
-    header = escape_markdown('🔍 *Результаты проверки:*\n\n')
-    result_text, updated_configs = await asyncio.to_thread(service_1c.parse_versions_from_soup, soup, load_configs(user_id), session)
-    save_configs(user_id, updated_configs)
+        # Обновляем матрицы для баз пользователя
+        configs = load_configs(user_id)
+        config_names = [c['name'] for c in configs]
+        if config_names:
+             await asyncio.to_thread(service_1c.update_matrices_for_list, session, config_names)
+
+        # Формируем результат
+        result_text, updated_configs = await asyncio.to_thread(
+            service_1c.sync_user_configs_with_cache, configs, session
+        )
+        save_configs(user_id, updated_configs)
+        
+        header_text = '🔍 *Результат проверки:*\n\n'
+        if not has_updates:
+            header_text = '♻️ *Изменений на сайте нет.*\nПоследние данные:\n\n'
+
+        full_text = escape_markdown(header_text) + result_text
+        await send_or_edit_message(context, user_id, full_text, get_main_keyboard(user_id, updated_configs, show_ack_button=True))
     
-    full_text = header + result_text
-    await send_or_edit_message(context, user_id, full_text, get_main_keyboard(user_id, updated_configs, show_ack_button=True))
+    except Exception as e:
+        logger.error(f"Error in manual check: {e}")
+        await send_or_edit_message(context, user_id, f"Ошибка: {escape_markdown(str(e))}", get_main_keyboard(user_id))
+        
     return ConversationHandler.END
 
 async def acknowledge_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -229,25 +266,50 @@ async def add_config_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_new_config_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    config_name = update.message.text
-    context.user_data['new_config_name'] = config_name
-
+    raw_input = update.message.text.strip()
+    
     try: await context.bot.delete_message(chat_id=user_id, message_id=update.message.id)
     except: pass
-    
     if 'prompt_message_id' in context.user_data:
         try: await context.bot.delete_message(chat_id=user_id, message_id=context.user_data['prompt_message_id'])
         except: pass
 
+    # Поиск в кэше
+    candidates = await asyncio.to_thread(service_1c.search_config_candidates, raw_input)
+    
+    # Сохраняем введенное пользователем на случай, если он выберет "Использовать мой вариант"
+    context.user_data['manual_name_input'] = raw_input
+    
+    # Если точное совпадение одно - сразу переходим дальше
+    if len(candidates) == 1 and normalize_text(candidates[0]) == normalize_text(raw_input):
+        context.user_data['new_config_name'] = candidates[0]
+        return await _ask_config_type(context, user_id, candidates[0])
+
+    keyboard = []
+    
+    # Кнопки с найденными вариантами
+    if candidates:
+        msg_text = f'🔎 По запросу "*{escape_markdown(raw_input)}*" найдено:'
+        # Сохраняем кандидатов в user_data, чтобы в callback передавать только индекс
+        context.user_data['search_candidates'] = candidates
+        for i, name in enumerate(candidates):
+            keyboard.append([InlineKeyboardButton(name, callback_data=f'cand_sel_{i}')])
+    else:
+        msg_text = f'🔎 По запросу "*{escape_markdown(raw_input)}*" совпадений в кэше не найдено\\.'
+
+    # Всегда даем опцию использовать именно то, что ввел юзер
+    keyboard.append([InlineKeyboardButton(f'✍️ Использовать: {raw_input}', callback_data='cand_manual')])
+    keyboard.append([InlineKeyboardButton('🔙 Отмена', callback_data='main_menu')])
+
     msg = await context.bot.send_message(
         chat_id=user_id,
-        text=f'Вы ввели: *{escape_markdown(config_name)}*\n\nКакую версию отслеживать?',
+        text=msg_text,
         parse_mode='MarkdownV2',
-        reply_markup=get_type_selection_keyboard()
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
     context.user_data['prompt_message_id'] = msg.message_id
-    return GET_CONFIG_TYPE
-
+    return SELECT_CONFIG_CANDIDATE
+    
 async def handle_new_config_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = update.effective_user.id
@@ -499,6 +561,7 @@ async def check_updates_handle_manual_config(update: Update, context: ContextTyp
 
 async def _perform_update_check(update: Update, context: ContextTypes.DEFAULT_TYPE, config_name: str, user_version: str):
     chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
     
     if not is_valid_version(user_version):
         await context.bot.send_message(
@@ -508,23 +571,16 @@ async def _perform_update_check(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return ConversationHandler.END
 
-    # ИСПРАВЛЕНО: user_version не экранируем внутри backticks
     await send_or_edit_message(
         context, chat_id, 
-        text=f'⏳ *Конфигурация:* {escape_markdown(config_name)}\n*Версия:* `{user_version}`\n\n🚀 *Подключаюсь к 1С\\.\\.\\.*', 
+        text=f'⏳ *Конфигурация:* {escape_markdown(config_name)}\n*Версия:* `{user_version}`\n\n🔍 *Ищу данные в кэше\\.\\.\\.*', 
         reply_markup=None
     )
-    await context.bot.send_chat_action(chat_id=chat_id, action='typing')
-
-    session, error = await asyncio.to_thread(service_1c.login_to_1c)
-    if error:
-        await send_or_edit_message(context, chat_id, text=f"❌ {escape_markdown(error)}", reply_markup=get_main_keyboard(update.effective_user.id))
-        context.user_data.clear()
-        return ConversationHandler.END
     
-    targets, error = await asyncio.to_thread(service_1c.get_target_versions, session, config_name)
+    targets, error = await asyncio.to_thread(service_1c.get_target_versions_from_cache, config_name)
+    
     if error:
-        await send_or_edit_message(context, chat_id, text=f"❌ {error}", reply_markup=get_main_keyboard(update.effective_user.id))
+        await send_or_edit_message(context, chat_id, text=f"❌ {error}", reply_markup=get_main_keyboard(user_id))
         context.user_data.clear()
         return ConversationHandler.END
     
@@ -537,16 +593,58 @@ async def _perform_update_check(update: Update, context: ContextTypes.DEFAULT_TY
         
     await send_or_edit_message(
         context, chat_id, 
-        text=f'{status_text}\n\n⏳ *Рассчитываю путь обновления\\.\\.\\.*', 
+        text=f'{status_text}\n\n⏳ *Рассчитываю путь обновления (это может занять время)\\.\\.\\.*', 
         reply_markup=None
     )
     
-    result_text = await asyncio.to_thread(service_1c.find_update_path, session, config_name, user_version, dp_target, non_dp_target)
+    # ПОЛУЧАЕМ СЕССИЮ ДЛЯ ОНЛАЙН-ДОКАЧКИ МАТРИЦ
+    session = None
+    is_cached = await asyncio.to_thread(service_1c.has_cached_matrix, config_name)
+    
+    if not is_cached:
+        await send_or_edit_message(
+            context, chat_id, 
+            text=f'⏳ *Данных нет в кэше\\. Скачиваю таблицу обновлений с сайта 1С\\.\\.\\.*', 
+            reply_markup=None
+        )
+        session, error = await asyncio.to_thread(service_1c.get_cached_session)
+        if error:
+            await send_or_edit_message(context, chat_id, text=f"❌ Ошибка входа: {escape_markdown(error)}", reply_markup=get_main_keyboard(user_id))
+            return ConversationHandler.END
+
+    result_text = await asyncio.to_thread(
+        service_1c.find_update_path, session, config_name, user_version, dp_target, non_dp_target
+    )
     
     header = escape_markdown('📊 *Результат:* \n\n')
     full_text = header + result_text
     
-    await send_or_edit_message(context, chat_id, text=full_text, reply_markup=get_main_keyboard(update.effective_user.id))
+    # РАЗБИВКА ДЛИННОГО СООБЩЕНИЯ
+    parts = split_long_text(full_text)
+    
+    # Удаляем сообщение "Рассчитываю..." перед отправкой результата, если возможно,
+    # или используем send_or_edit только для первой части.
+    bot_state = load_bot_state(user_id)
+    main_id = bot_state.get('main_menu_message_id')
+    
+    if main_id:
+        try: await context.bot.delete_message(chat_id=chat_id, message_id=main_id)
+        except: pass
+        bot_state['main_menu_message_id'] = None
+        save_bot_state(user_id, bot_state)
+
+    for i, part in enumerate(parts):
+        reply_markup = get_main_keyboard(user_id) if i == len(parts) - 1 else None
+        sent = await context.bot.send_message(
+            chat_id=chat_id, 
+            text=part, 
+            parse_mode='MarkdownV2', 
+            reply_markup=reply_markup
+        )
+        if i == len(parts) - 1:
+            bot_state['main_menu_message_id'] = sent.message_id
+            save_bot_state(user_id, bot_state)
+
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -554,12 +652,12 @@ async def check_updates_calculate(update: Update, context: ContextTypes.DEFAULT_
     user_version = update.message.text.strip()
     config_name = context.user_data.get('selected_config')
     chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
     
     if not config_name:
         await update.message.reply_text('Произошла ошибка: конфигурация не была выбрана. Попробуйте снова.')
         return ConversationHandler.END
     
-    # ИСПРАВЛЕНО: Добавлена валидация версии
     if not is_valid_version(user_version):
         try: await context.bot.delete_message(chat_id=chat_id, message_id=update.message.id)
         except: pass
@@ -570,59 +668,84 @@ async def check_updates_calculate(update: Update, context: ContextTypes.DEFAULT_
         )
         return GET_CURRENT_VERSION
     
-    try: 
-        await context.bot.delete_message(chat_id=chat_id, message_id=update.message.id)
-    except: 
-        pass
+    try: await context.bot.delete_message(chat_id=chat_id, message_id=update.message.id)
+    except: pass
         
     await send_or_edit_message(
-        context, 
-        chat_id, 
-        text='⏳ *Подключаюсь к порталу 1С\\.\\.\\.*', 
-        reply_markup=None
-    )
-    await context.bot.send_chat_action(chat_id=chat_id, action='typing')
-
-    session, error = await asyncio.to_thread(service_1c.login_to_1c)
-    if error:
-        await send_or_edit_message(context, chat_id, text=f"❌ {escape_markdown(error)}", reply_markup=get_main_keyboard(update.effective_user.id))
-        context.user_data.clear()
-        return ConversationHandler.END
-    
-    await send_or_edit_message(
-        context, 
-        chat_id, 
+        context, chat_id, 
         text=f'⏳ *Ищу актуальные версии для {escape_markdown(config_name)}\\.\\.\\.*', 
         reply_markup=None
     )
     
-    targets, error = await asyncio.to_thread(service_1c.get_target_versions, session, config_name)
+    # 1. Получаем целевые версии из кэша
+    targets, error = await asyncio.to_thread(service_1c.get_target_versions_from_cache, config_name)
+    
     if error:
-        await send_or_edit_message(context, chat_id, text=f"❌ {error}", reply_markup=get_main_keyboard(update.effective_user.id))
+        await send_or_edit_message(context, chat_id, text=f"❌ {escape_markdown(error)}", reply_markup=get_main_keyboard(user_id))
         context.user_data.clear()
         return ConversationHandler.END
     
     dp_target = targets['dp']
     non_dp_target = targets['non_dp']
     
+    # 2. Формируем текст статуса (ЗДЕСЬ БЫЛА ОШИБКА, ЭТОТ БЛОК ДОЛЖЕН БЫТЬ ТУТ)
     status_text = f'✅ Версия на ДП: `{escape_markdown(dp_target)}`'
     if dp_target != non_dp_target:
         status_text += f'\n✅ Версия не на ДП: `{escape_markdown(non_dp_target)}`'
     
-    # ИСПРАВЛЕНО: user_version не экранируется, так как проверен валидатором и находится в backticks
+    # 3. Сообщаем о начале расчета
     await send_or_edit_message(
-        context, 
-        chat_id, 
+        context, chat_id, 
         text=f'{status_text}\n\n⏳ *Рассчитываю цепочку обновлений от* `{user_version}`*\\.\\.\\.*', 
         reply_markup=None
     )
     
-    result_text = await asyncio.to_thread(service_1c.find_update_path, session, config_name, user_version, dp_target, non_dp_target)
+    # 4. Проверяем наличие матрицы и при необходимости качаем её (Оптимизация)
+    session = None
+    is_cached = await asyncio.to_thread(service_1c.has_cached_matrix, config_name)
+    
+    if not is_cached:
+        await send_or_edit_message(
+            context, chat_id, 
+            text=f'{status_text}\n\n⏳ *Данных нет в кэше\\. Скачиваю таблицу обновлений с сайта 1С\\.\\.\\.*', 
+            reply_markup=None
+        )
+        session, error = await asyncio.to_thread(service_1c.get_cached_session)
+        if error:
+            await send_or_edit_message(context, chat_id, text=f"❌ Ошибка входа: {escape_markdown(error)}", reply_markup=get_main_keyboard(user_id))
+            return ConversationHandler.END
+
+    # 5. Считаем путь
+    result_text = await asyncio.to_thread(
+        service_1c.find_update_path, session, config_name, user_version, dp_target, non_dp_target
+    )
     
     header = escape_markdown('📊 *Результат подсчета обновлений:*\n\n')
     full_text = header + result_text
     
-    await send_or_edit_message(context, chat_id, text=full_text, reply_markup=get_main_keyboard(update.effective_user.id))
+    # 6. Разбиваем длинное сообщение
+    parts = split_long_text(full_text)
+    
+    bot_state = load_bot_state(user_id)
+    main_id = bot_state.get('main_menu_message_id')
+    if main_id:
+        try: await context.bot.delete_message(chat_id=chat_id, message_id=main_id)
+        except: pass
+        bot_state['main_menu_message_id'] = None
+        save_bot_state(user_id, bot_state)
+
+    for i, part in enumerate(parts):
+        reply_markup = get_main_keyboard(user_id) if i == len(parts) - 1 else None
+        sent = await context.bot.send_message(
+            chat_id=chat_id, 
+            text=part, 
+            parse_mode='MarkdownV2', 
+            reply_markup=reply_markup
+        )
+        if i == len(parts) - 1:
+            bot_state['main_menu_message_id'] = sent.message_id
+            save_bot_state(user_id, bot_state)
+
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -1133,3 +1256,47 @@ async def cancel_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await main_menu_callback(update, context)
     return ConversationHandler.END
+    
+async def handle_config_candidate_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = update.effective_user.id
+    await query.answer()
+    
+    data = query.data
+    selected_name = ""
+    
+    if data == 'cand_manual':
+        selected_name = context.user_data.get('manual_name_input', 'Unkown')
+    elif data.startswith('cand_sel_'):
+        idx = int(data.split('_')[2])
+        candidates = context.user_data.get('search_candidates', [])
+        if 0 <= idx < len(candidates):
+            selected_name = candidates[idx]
+        else:
+            await query.edit_message_text("❌ Ошибка выбора. Попробуйте снова.")
+            return ConversationHandler.END
+
+    context.user_data['new_config_name'] = selected_name
+    
+    # Чистим временные данные
+    context.user_data.pop('search_candidates', None)
+    context.user_data.pop('manual_name_input', None)
+
+    return await _ask_config_type(context, user_id, selected_name)
+    
+async def _ask_config_type(context, user_id, config_name):
+    """Вспомогательная функция для перехода к выбору типа (Latest/LTS/Specific)"""
+    bot_state = load_bot_state(user_id)
+    # Удаляем старое сообщение с выбором, если оно было
+    if 'prompt_message_id' in context.user_data:
+        try: await context.bot.delete_message(chat_id=user_id, message_id=context.user_data['prompt_message_id'])
+        except: pass
+        
+    msg = await context.bot.send_message(
+        chat_id=user_id,
+        text=f'Выбрана конфигурация: *{escape_markdown(config_name)}*\n\nКакую версию отслеживать?',
+        parse_mode='MarkdownV2',
+        reply_markup=get_type_selection_keyboard()
+    )
+    context.user_data['prompt_message_id'] = msg.message_id
+    return GET_CONFIG_TYPE
