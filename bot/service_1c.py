@@ -394,7 +394,7 @@ def get_target_versions(session: requests.Session, config_name: str) -> tuple:
         logger.error(f'Ошибка при получении целевых версий для \'{config_name}\': {e}', exc_info=True)
         return (None, f'Произошла ошибка при получении актуальных версий: {escape_markdown(str(e))}')
 
-def (session: requests.Session, config_name: str, start_version: str, dp_target: str, non_dp_target: str) -> str:
+def find_update_path(session: requests.Session, config_name: str, start_version: str, dp_target: str, non_dp_target: str) -> str:
     try:
         RELEASES_URL = 'https://releases.1c.ru/total'
         # 1. Timeout
