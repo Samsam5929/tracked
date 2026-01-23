@@ -5,6 +5,7 @@ from datetime import datetime
 from .config import *
 from .utils import normalize_text, escape_markdown, version_tuple
 import logging
+from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +14,7 @@ def login_to_1c():
     session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
     try:
         LOGIN_URL = 'https://login.1c.ru/login'
-        r = session.get(LOGIN_URL)
+        r = session.get(LOGIN_URL, timeout=30)
         r.raise_for_status()
         soup = BeautifulSoup(r.content, 'html.parser')
         
@@ -25,7 +26,7 @@ def login_to_1c():
             'username': LOGIN_1C, 'password': PASSWORD_1C, 
             'execution': execution.get('value'), '_eventId': 'submit', 'rememberMe': 'on'
         }
-        post = session.post(LOGIN_URL, data=payload)
+        post = session.post(LOGIN_URL, data=payload, timeout=30)
         post.raise_for_status()
         
         if 'Неверный логин или пароль' in post.text:
@@ -36,7 +37,7 @@ def login_to_1c():
 
 def get_releases_soup(session):
     try:
-        r = session.get('https://releases.1c.ru/total')
+        r = session.get('https://releases.1c.ru/total', timeout=30)
         r.raise_for_status()
         return BeautifulSoup(r.content, 'html.parser'), None
     except Exception as e:
@@ -76,16 +77,13 @@ def parse_versions_from_soup(soup, configs_data: list, session: requests.Session
 
         ver_cell = found_row.find('td', class_='versionColumn')
         
-        # --- ДОБАВЛЕНА ЗАЩИТА ---
         if not ver_cell:
             results_text.append(f'⚠️ *{safe_name}*\n   └ Ошибка парсинга: не найдена колонка версии')
             logger.warning(f"Не найдена versionColumn для {config['name']}")
             continue
-        # ------------------------
 
         date_cell = ver_cell.find_next_sibling('td')
         
-        # На всякий случай проверяем и date_cell, хотя это менее критично
         if not date_cell:
              results_text.append(f'⚠️ *{safe_name}*\n   └ Ошибка парсинга: не найдена дата')
              continue
@@ -105,7 +103,6 @@ def parse_versions_from_soup(soup, configs_data: list, session: requests.Session
                 d_text = all_dates[idx] if idx < len(all_dates) else "н/д"
                 
                 is_dp = False
-                # Поиск метки ДП
                 next_el = a_tag.next_sibling
                 while next_el and (isinstance(next_el, NavigableString) and not next_el.strip()):
                     next_el = next_el.next_sibling
@@ -119,10 +116,8 @@ def parse_versions_from_soup(soup, configs_data: list, session: requests.Session
 
         latest_obj = found_versions[0] if found_versions else None
         
-        # Ищем явную ДП
         dp_obj = next((v for v in found_versions if v['is_dp']), None)
         
-        # ИСПРАВЛЕНИЕ: Если явной ДП нет, берем самую новую (Latest)
         if not dp_obj:
             dp_obj = latest_obj
 
@@ -141,13 +136,9 @@ def parse_versions_from_soup(soup, configs_data: list, session: requests.Session
         def format_line(icon, ver, date, mark):
             return f"{mark} {icon} `{escape_markdown(ver)}` {SEPARATOR_SYMBOL} `{escape_markdown(date)}`"
 
-        # --- ЛОГИКА ВЫБОРА ВЕРСИИ ---
-        
         if track_type == 'specific':
-            # 1. Ищем на главной
             target_obj = next((v for v in found_versions if v['ver'].startswith(branch_filter)), None)
             
-            # 2. Если нет на главной, проваливаемся внутрь
             if not target_obj and session:
                 name_cell = found_row.find('td', class_='nameColumn')
                 link_tag = name_cell.find('a') if name_cell else None
@@ -182,7 +173,6 @@ def parse_versions_from_soup(soup, configs_data: list, session: requests.Session
                 save_date = curr_date
 
         elif track_type == 'specific_dp':
-            # --- ЧАСТЬ 1: ВЕТКА (с проваливанием) ---
             target_spec = next((v for v in found_versions if v['ver'].startswith(branch_filter)), None)
             
             if not target_spec and session:
@@ -194,8 +184,7 @@ def parse_versions_from_soup(soup, configs_data: list, session: requests.Session
                     if deep_ver:
                         target_spec = {'ver': deep_ver, 'date': deep_date}
 
-            # --- ЧАСТЬ 2: ДП (или Latest, если ДП нет) ---
-            target_dp = dp_obj # Здесь уже лежит либо ДП, либо Latest
+            target_dp = dp_obj 
             
             old_parts = last_ver_saved.split('|') if '|' in last_ver_saved else [last_ver_saved, '']
             old_spec = old_parts[0]
@@ -204,7 +193,6 @@ def parse_versions_from_soup(soup, configs_data: list, session: requests.Session
             old_date_parts = last_date_saved.split('|') if '|' in last_date_saved else [last_date_saved, '']
             old_spec_date = old_date_parts[0]
 
-            # Обработка ветки
             if not target_spec:
                 display_lines.append(f"⚠️ Ветка `{escape_markdown(branch_filter)}` не найдена")
                 curr_spec_ver = old_spec
@@ -226,7 +214,6 @@ def parse_versions_from_soup(soup, configs_data: list, session: requests.Session
                 mark_spec = ICON_NEW_VERSION if (is_spec_changed or was_already_new) else ICON_OK
                 display_lines.append(format_line(ICON_SPECIFIC_TYPE, curr_spec_ver, curr_spec_date, mark_spec))
 
-            # Обработка ДП
             curr_dp_ver = target_dp['ver'] if target_dp else "Нет"
             curr_dp_date = target_dp['date'] if target_dp else "-"
             
@@ -266,12 +253,11 @@ def parse_versions_from_soup(soup, configs_data: list, session: requests.Session
             save_date = f"{curr_new_date}|{curr_dp_date}"
 
         else:
-            # latest или dp
             target_obj = None
             icon = ICON_LATEST_TYPE
             
             if track_type == 'dp':
-                target_obj = dp_obj # Теперь здесь всегда есть версия (ДП или Latest)
+                target_obj = dp_obj 
                 icon = ICON_LTS_TYPE
             else:
                 target_obj = latest_obj
@@ -300,27 +286,16 @@ def parse_versions_from_soup(soup, configs_data: list, session: requests.Session
 
 def get_version_from_detailed_page(session, config_url, branch_filter):
     try:
-        r = session.get(config_url)
+        r = session.get(config_url, timeout=30)
         r.raise_for_status()
         soup = BeautifulSoup(r.content, 'html.parser')
         
         all_updates_link = soup.find('a', href=re.compile(r'\?allUpdates=true'))
         if all_updates_link:
             href = all_updates_link['href']
-            if not href.startswith('http'):
-                base = 'https://releases.1c.ru'
-                if not href.startswith('/'):
-                    parent = config_url.split('?')[0]
-                    if href.startswith('?'):
-                        url = parent + href
-                    else:
-                        url = base + href
-                else:
-                    url = base + href
-            else:
-                url = href
+            url = urljoin(config_url, href)
             
-            r2 = session.get(url)
+            r2 = session.get(url, timeout=30)
             if r2.status_code == 200:
                 soup = BeautifulSoup(r2.content, 'html.parser')
 
@@ -349,7 +324,8 @@ def get_version_from_detailed_page(session, config_url, branch_filter):
 def get_target_versions(session: requests.Session, config_name: str) -> tuple:
     try:
         RELEASES_URL = 'https://releases.1c.ru/total'
-        releases_response = session.get(RELEASES_URL)
+        # Добавляем timeout
+        releases_response = session.get(RELEASES_URL, timeout=30) 
         releases_response.raise_for_status()
         releases_soup = BeautifulSoup(releases_response.content, 'html.parser')
         
@@ -418,10 +394,11 @@ def get_target_versions(session: requests.Session, config_name: str) -> tuple:
         logger.error(f'Ошибка при получении целевых версий для \'{config_name}\': {e}', exc_info=True)
         return (None, f'Произошла ошибка при получении актуальных версий: {escape_markdown(str(e))}')
 
-def find_update_path(session: requests.Session, config_name: str, start_version: str, dp_target: str, non_dp_target: str) -> str:
+def (session: requests.Session, config_name: str, start_version: str, dp_target: str, non_dp_target: str) -> str:
     try:
         RELEASES_URL = 'https://releases.1c.ru/total'
-        releases_response = session.get(RELEASES_URL)
+        # 1. Timeout
+        releases_response = session.get(RELEASES_URL, timeout=30) 
         releases_response.raise_for_status()
         releases_soup = BeautifulSoup(releases_response.content, 'html.parser')
         
@@ -443,8 +420,8 @@ def find_update_path(session: requests.Session, config_name: str, start_version:
         if not config_link_tag or not config_link_tag.has_attr('href'):
             return f'Не удалось найти конфигурацию с названием "{escape_markdown(config_name)}" на сайте 1С. Проверьте точность названия.'
 
-        config_page_url = 'https://releases.1c.ru' + config_link_tag['href']
-        config_page_response = session.get(config_page_url)
+        config_page_url = urljoin('https://releases.1c.ru', config_link_tag['href'])
+        config_page_response = session.get(config_page_url, timeout=30)
         config_page_response.raise_for_status()
         
         initial_soup = BeautifulSoup(config_page_response.content, 'html.parser')
@@ -454,21 +431,23 @@ def find_update_path(session: requests.Session, config_name: str, start_version:
         if all_updates_link_tag:
             base_url = 'https://releases.1c.ru'
             href = all_updates_link_tag['href']
-            if not href.startswith('/'):
-                parent_url = config_link_tag['href'].split('?')[0]
-                all_updates_url = base_url + parent_url + href
-            else:
-                all_updates_url = base_url + href
+            all_updates_url = urljoin(config_page_url, all_updates_link_tag['href'])
                 
-            updates_response = session.get(all_updates_url)
+            updates_response = session.get(all_updates_url, timeout=30)
             updates_response.raise_for_status()
             updates_soup = BeautifulSoup(updates_response.content, 'html.parser')
 
         updates_table = updates_soup.find('table', id='versionsTable')
         if not updates_table:
             return 'Не удалось найти таблицу с историей обновлений на странице конфигурации.'
+            
+        # ДОБАВИТЬ ПРОВЕРКУ НА НАЛИЧИЕ СТРОК
+        all_rows = updates_table.find_all('tr')
+        if not all_rows or len(all_rows) < 2:
+            return 'Таблица обновлений пуста или имеет неверный формат.'
+            
+        rows = all_rows[1:]
 
-        rows = updates_table.find_all('tr')[1:] 
         current_version = start_version.strip()
         actual_target = dp_target
         message_prefix = ''
@@ -478,7 +457,6 @@ def find_update_path(session: requests.Session, config_name: str, start_version:
             message_prefix = f'Ваша версия `{escape_markdown(current_version)}` новее версии на ДП `{escape_markdown(dp_target)}`\\. Расчет выполняется до версии не на длительной поддержке\\.\n\n'
 
         if current_version == actual_target:
-            # ИСПРАВЛЕНИЕ: rf-строка, чтобы убрать SyntaxWarning
             return message_prefix + rf'Ваша версия `{escape_markdown(start_version)}` уже является целевой \(`{escape_markdown(actual_target)}`\)\.'
 
         predecessors = {}

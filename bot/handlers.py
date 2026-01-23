@@ -75,7 +75,6 @@ def format_version_list_from_storage(user_id: int):
                 
                 line1 = format_line(icon_primary, v_primary, d_primary, status_mark)
                 if track_type == 'specific_dp' and branch_filter:
-                    # Исправлено: не экранируем branch_filter внутри
                     line1 += f" \\(фильтр: `{branch_filter}`\\)"
                 
                 display_lines.append(line1)
@@ -89,7 +88,6 @@ def format_version_list_from_storage(user_id: int):
                 line = format_line(icon, last_version, last_date, status_mark)
                 
                 if (track_type == 'specific' or track_type == 'specific_dp') and branch_filter:
-                    # Исправлено: не экранируем branch_filter внутри
                     line += f" \\(фильтр: `{branch_filter}`\\)"
                 
                 display_lines.append(line)
@@ -123,7 +121,6 @@ async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     result_text, configs = format_version_list_from_storage(user_id)
     full_text = header + result_text
     
-    # ИЗМЕНЕНО: show_ack_button=True
     await send_or_edit_message(context, user_id, full_text, get_main_keyboard(user_id, configs, show_ack_button=True))
 
 async def daily_version_check(context: ContextTypes.DEFAULT_TYPE):
@@ -136,29 +133,33 @@ async def daily_version_check(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ежедневная проверка пропущена: {error}")
         return
 
-    soup, soup_error = await asyncio.to_thread(service_1c.get_releases_soup, session)
-    if soup_error or not soup:
-        logger.error(f"Ежедневная проверка пропущена (ошибка получения таблицы): {soup_error}")
-        return
+    try:  # <--- Оберни работу с сессией в try/finally
+        soup, soup_error = await asyncio.to_thread(service_1c.get_releases_soup, session)
+        if soup_error or not soup:
+            logger.error(f"Ежедневная проверка пропущена (ошибка получения таблицы): {soup_error}")
+            return
 
-    user_ids = [int(p.name) for p in USER_DATA_DIR.iterdir() if p.is_dir() and p.name.isdigit()]
-    
-    for user_id in user_ids:
-        try:
-            user_configs = load_configs(user_id)
-            if not user_configs: continue
+        user_ids = [int(p.name) for p in USER_DATA_DIR.iterdir() if p.is_dir() and p.name.isdigit()]
+        
+        for user_id in user_ids:
+            # ДОБАВИТЬ ОТСТУП (TAB или 4 пробела) для всего блока try/except ниже
+            try:
+                user_configs = load_configs(user_id)
+                if not user_configs: continue
+                
+                result_text, updated_configs = await asyncio.to_thread(service_1c.parse_versions_from_soup, soup, user_configs, session)
+                save_configs(user_id, updated_configs)
+                
+                full_text = escape_markdown('🗓️ *Ежедневная проверка:*\n\n') + result_text
+                await send_or_edit_message(context, user_id, full_text, get_main_keyboard(user_id, updated_configs, show_ack_button=True))
+                
+            except Forbidden:
+                logger.warning(f'Пользователь {user_id} заблокировал бота. Пропускаем.')
+            except Exception as e:
+                logger.error(f'Ошибка проверки для {user_id}: {e}')
             
-            result_text, updated_configs = await asyncio.to_thread(service_1c.parse_versions_from_soup, soup, user_configs, session)
-            save_configs(user_id, updated_configs)
-            
-            full_text = escape_markdown('🗓️ *Ежедневная проверка:*\n\n') + result_text
-            # ИЗМЕНЕНО: show_ack_button=True
-            await send_or_edit_message(context, user_id, full_text, get_main_keyboard(user_id, updated_configs, show_ack_button=True))
-            
-        except Forbidden:
-            logger.warning(f'Пользователь {user_id} заблокировал бота. Пропускаем.')
-        except Exception as e:
-            logger.error(f'Ошибка проверки для {user_id}: {e}')
+    finally:
+        session.close()
 
 async def get_versions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -174,13 +175,11 @@ async def get_versions_callback(update: Update, context: ContextTypes.DEFAULT_TY
     
     session, error = await asyncio.to_thread(service_1c.login_to_1c)
     if error:
-        # Здесь False (по умолчанию), так как при ошибке списка нет
         await send_or_edit_message(context, user_id, f"Ошибка: {escape_markdown(error)}", get_main_keyboard(user_id))
         return ConversationHandler.END
 
     soup, soup_error = await asyncio.to_thread(service_1c.get_releases_soup, session)
     if soup_error:
-        # Здесь False (по умолчанию)
         await send_or_edit_message(context, user_id, f"Ошибка: {escape_markdown(soup_error)}", get_main_keyboard(user_id))
         return ConversationHandler.END
 
@@ -189,7 +188,6 @@ async def get_versions_callback(update: Update, context: ContextTypes.DEFAULT_TY
     save_configs(user_id, updated_configs)
     
     full_text = header + result_text
-    # ИЗМЕНЕНО: show_ack_button=True
     await send_or_edit_message(context, user_id, full_text, get_main_keyboard(user_id, updated_configs, show_ack_button=True))
     return ConversationHandler.END
 
@@ -209,7 +207,6 @@ async def manage_list_menu_callback(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     user_id = update.effective_user.id
     await query.answer()
-    # ИСПРАВЛЕНО: r-строка для корректной обработки слэшей (убирает SyntaxWarning)
     text = (
         r"⚙️ *Настройки списка*" "\n\n"
         r"Здесь вы можете добавлять и удалять базы, менять режим отслеживания \(ЛТС/Обычная\) "
@@ -318,7 +315,6 @@ async def _save_new_config(update, context, track_type, branch_filter):
     }.get(track_type, track_type)
     
     success_text = f'✅ Конфигурация *{escape_markdown(config_name)}* добавлена\\!\nТип: {escape_markdown(type_desc)}'
-    # ИЗМЕНЕНО: show_ack_button=True
     await send_or_edit_message(context, user_id, success_text, get_main_keyboard(user_id, configs, show_ack_button=True))
     return ConversationHandler.END
     
@@ -472,7 +468,6 @@ async def check_updates_select_config(update: Update, context: ContextTypes.DEFA
     selected_config_name = configs[config_index]['name']
     context.user_data['selected_config'] = selected_config_name
     
-    # Исправлено: не экранируем точки в примере кода
     await query.edit_message_text(
         text=f'Выбрана конфигурация: *{escape_markdown(selected_config_name)}*\n\n' + 
              'Теперь, пожалуйста, пришлите номер вашей текущей версии \\(например, `3.0.123.45`\\)\\.', 
@@ -513,9 +508,9 @@ async def _perform_update_check(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return ConversationHandler.END
 
+    # ИСПРАВЛЕНО: user_version не экранируем внутри backticks
     await send_or_edit_message(
         context, chat_id, 
-        # Исправлено: user_version без escape_markdown
         text=f'⏳ *Конфигурация:* {escape_markdown(config_name)}\n*Версия:* `{user_version}`\n\n🚀 *Подключаюсь к 1С\\.\\.\\.*', 
         reply_markup=None
     )
@@ -564,6 +559,17 @@ async def check_updates_calculate(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text('Произошла ошибка: конфигурация не была выбрана. Попробуйте снова.')
         return ConversationHandler.END
     
+    # ИСПРАВЛЕНО: Добавлена валидация версии
+    if not is_valid_version(user_version):
+        try: await context.bot.delete_message(chat_id=chat_id, message_id=update.message.id)
+        except: pass
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text='❌ *Некорректный формат версии*\\.\nПример: `3.0.123.45`',
+            parse_mode='MarkdownV2'
+        )
+        return GET_CURRENT_VERSION
+    
     try: 
         await context.bot.delete_message(chat_id=chat_id, message_id=update.message.id)
     except: 
@@ -602,11 +608,12 @@ async def check_updates_calculate(update: Update, context: ContextTypes.DEFAULT_
     status_text = f'✅ Версия на ДП: `{escape_markdown(dp_target)}`'
     if dp_target != non_dp_target:
         status_text += f'\n✅ Версия не на ДП: `{escape_markdown(non_dp_target)}`'
-        
+    
+    # ИСПРАВЛЕНО: user_version не экранируется, так как проверен валидатором и находится в backticks
     await send_or_edit_message(
         context, 
         chat_id, 
-        text=f'{status_text}\n\n⏳ *Рассчитываю цепочку обновлений от* `{escape_markdown(user_version)}`*\\.\\.\\.*', 
+        text=f'{status_text}\n\n⏳ *Рассчитываю цепочку обновлений от* `{user_version}`*\\.\\.\\.*', 
         reply_markup=None
     )
     
@@ -802,7 +809,6 @@ async def send_registration_result(update: Update, context: ContextTypes.DEFAULT
         try: await context.bot.delete_message(chat_id=user_id, message_id=old_menu_id)
         except: pass
 
-    # ИСПРАВЛЕНО: Кнопка "Завершить", чтобы выйти из режима ConversationHandler
     finish_markup = InlineKeyboardMarkup([[InlineKeyboardButton('⬅️ Завершить', callback_data='cancel_reg')]])
 
     new_extra_ids = []
@@ -811,7 +817,6 @@ async def send_registration_result(update: Update, context: ContextTypes.DEFAULT
         if i == 0: text_content = header + text_content
         
         if i == len(pages) - 1:
-            # Последнее сообщение с кнопкой выхода
             sent_msg = await context.bot.send_message(
                 chat_id=user_id, 
                 text=text_content, 
@@ -848,13 +853,9 @@ async def manage_mappings_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     current_row = []
     
     for i, (raw, fixed) in enumerate(mappings.items(), 1):
-        # ИСПРАВЛЕНО: Убрано ограничение по длине (было [:40])
-        # Теперь выводится полное название
-        
         line = f"*{i}\\.* `{escape_markdown(raw)}`\n   ⬇️ `{escape_markdown(fixed)}`"
         text_lines.append(line)
         
-        # Кнопки
         raw_hash = hashlib.md5(raw.encode()).hexdigest()
         btn = InlineKeyboardButton(f"🗑 {i}", callback_data=f'del_map_{raw_hash}')
         current_row.append(btn)
@@ -870,7 +871,6 @@ async def manage_mappings_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     
     full_text = "\n\n".join(text_lines)
     
-    # Если список получится гигантским (больше лимита Telegram), он обрежется в конце
     if len(full_text) > 4000:
         full_text = full_text[:4000] + "\n\n_\\.\\.\\. (список слишком длинный, удалите часть записей)_"
 
@@ -904,7 +904,6 @@ async def delete_stray_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: pass
     
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ИСПРАВЛЕНО: Ручное экранирование спецсимволов для MarkdownV2
     text = (
         "🤖 *Справка по боту*\n\n"
         "Этот бот помогает отслеживать обновления конфигураций 1С\\.\n\n"
@@ -918,14 +917,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚙️ *Управление* — Добавление и удаление конфигураций из списка отслеживания\n\n"
         "_Бот проверяет обновления автоматически раз в сутки\\._"
     )
-    # ИСПРАВЛЕНО: Убран вызов escape_markdown(text), так как текст уже подготовлен
     await send_or_edit_message(context, update.effective_chat.id, text, get_main_keyboard(update.effective_user.id))
     
 async def cleanup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    # ИСПРАВЛЕНО: r-строка (SyntaxWarning fix)
     text = (
         r"🧹 *Фильтр баз \(saas\_2641\)*" "\n\n"
         r"Пришлите список баз \(текстом\)\." "\n"
@@ -939,21 +936,19 @@ async def cleanup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('⬅️ Главное меню', callback_data='cancel_cleanup')]])
     )
     return GET_CLEANUP_TEXT
+
 async def process_cleanup_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     
-    # Удаляем сообщение пользователя, чтобы не засорять чат
     try: await context.bot.delete_message(chat_id=user_id, message_id=update.message.id)
     except: pass
     
-    # Инициализируем буфер, если его нет
     if 'cleanup_buffer' not in context.user_data: 
         context.user_data['cleanup_buffer'] = []
     
     context.user_data['cleanup_buffer'].append(text)
     
-    # Сбрасываем предыдущий таймер и запускаем новый (ждем окончания потока сообщений)
     if 'cleanup_timer_task' in context.user_data: 
         context.user_data['cleanup_timer_task'].cancel()
     
@@ -974,7 +969,6 @@ async def finalize_cleanup_processing(update: Update, context: ContextTypes.DEFA
     ignore_list = load_cleanup_ignore(user_id)
     found_bases = parse_saas_bases(full_text, ignore_list)
     
-    # ИСПРАВЛЕНО: Кнопка "Завершить"
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton('⬅️ Завершить', callback_data='cancel_cleanup')]])
 
     if not found_bases:
@@ -1049,7 +1043,6 @@ async def manage_ignore_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     ignore_list = load_cleanup_ignore(user_id)
     
-    # ИСПРАВЛЕНО: r-строка
     text = (
         r"🚫 *Базы\-исключения \(SaaS\)*" "\n\n"
         r"Эти базы будут автоматически удаляться из отчета при фильтрации\." "\n"
@@ -1065,7 +1058,6 @@ async def add_ignore_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    # ИСПРАВЛЕНО: Двойные слэши \\
     msg = await query.edit_message_text(
         text="Пришлите название базы, которую нужно игнорировать \\(например, `UNF_12345`\\):",
         parse_mode='MarkdownV2',
@@ -1092,21 +1084,18 @@ async def add_ignore_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ignore_list.append(base_name)
         ignore_list.sort()
         save_cleanup_ignore(user_id, ignore_list)
-        # ИСПРАВЛЕНО: Экранирована точка (\.) и используется r-строка
         sent_msg = await context.bot.send_message(
             chat_id=user_id, 
             text=f"✅ База `{base_name}` добавлена в исключения\\.", 
             parse_mode='MarkdownV2'
         )
     else:
-        # ИСПРАВЛЕНО: Экранирована точка (\.)
         sent_msg = await context.bot.send_message(
             chat_id=user_id, 
             text=f"ℹ️ База `{base_name}` уже есть в списке\\.", 
             parse_mode='MarkdownV2'
         )
     
-    # Добавляем ID сообщения в список для удаления
     if sent_msg:
         bot_state = load_bot_state(user_id)
         if 'extra_message_ids' not in bot_state:
@@ -1135,7 +1124,6 @@ async def delete_ignore_callback(update: Update, context: ContextTypes.DEFAULT_T
 async def cancel_add_ignore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    # Возврат в меню исключений
     await manage_ignore_menu(update, context)
     return ConversationHandler.END
     
@@ -1144,4 +1132,4 @@ async def cancel_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     context.user_data.clear()
     await main_menu_callback(update, context)
-    return ConversationHandler.ENDя
+    return ConversationHandler.END

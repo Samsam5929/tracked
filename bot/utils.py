@@ -56,11 +56,9 @@ def is_valid_version(version_str: str) -> bool:
     return bool(re.match(pattern, version_str.strip()))
     
 def parse_config_and_version(text: str):
-    """
-    Пытается извлечь название конфигурации и версию из строки.
-    Пример: "Бухгалтерия 3.0 (3.0.189.29)" -> ("Бухгалтерия 3.0", "3.0.189.29")
-    """
-    version_pattern = r'\b\d+\.\d+\.\d+(\.\d+)?\b'
+    
+    # Разрешаем от 2 до 5 групп цифр (например, 8.3, 3.0.100, 3.0.123.45)
+    version_pattern = r'\b\d+\.\d+(\.\d+){0,3}\b' 
     match = re.search(version_pattern, text)
     
     if match:
